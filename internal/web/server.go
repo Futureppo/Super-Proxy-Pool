@@ -258,7 +258,43 @@ func (a *App) handleSubscriptionList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: items})
+	type subscriptionCard struct {
+		models.Subscription
+		TotalNodes       int    `json:"total_nodes"`
+		AvailableNodes   int    `json:"available_nodes"`
+		InvalidNodes     int    `json:"invalid_nodes"`
+		AverageLatencyMS *int64 `json:"average_latency_ms"`
+	}
+
+	resp := make([]subscriptionCard, 0, len(items))
+	for _, item := range items {
+		nodes, err := a.subscriptions.ListNodes(r.Context(), item.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		card := subscriptionCard{Subscription: item, TotalNodes: len(nodes)}
+		var latencySum int64
+		var latencyCount int64
+		for _, node := range nodes {
+			if !node.Enabled || node.LastStatus == "unavailable" {
+				card.InvalidNodes++
+			}
+			if node.LastStatus == "available" {
+				card.AvailableNodes++
+			}
+			if node.LastLatencyMS != nil {
+				latencySum += *node.LastLatencyMS
+				latencyCount++
+			}
+		}
+		if latencyCount > 0 {
+			avg := latencySum / latencyCount
+			card.AverageLatencyMS = &avg
+		}
+		resp = append(resp, card)
+	}
+	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: resp})
 }
 
 func (a *App) handleSubscriptionCreate(w http.ResponseWriter, r *http.Request) {

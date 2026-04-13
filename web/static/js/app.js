@@ -2,6 +2,7 @@ const page = document.body.dataset.page;
 const subscriptionId = document.body.dataset.subscriptionId;
 
 const state = {
+  settings: null,
   subscriptions: [],
   manualNodes: [],
   subscriptionNodes: [],
@@ -19,6 +20,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   connectEvents();
 
   if (page === "login") return initLoginPage();
+  await preloadSettings();
   if (page === "subscriptions") return initSubscriptionsPage();
   if (page === "subscription-detail") return initSubscriptionDetailPage();
   if (page === "manual-nodes") return initManualNodesPage();
@@ -115,6 +117,14 @@ async function initSettingsPage() {
   await loadSettings();
 }
 
+async function preloadSettings() {
+  try {
+    state.settings = await api("/api/settings");
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 async function loadSubscriptions() {
   state.subscriptions = await api("/api/subscriptions");
   renderSubscriptions();
@@ -150,6 +160,7 @@ async function loadPoolCandidates() {
 
 async function loadSettings() {
   const settings = await api("/api/settings");
+  state.settings = settings;
   fillForm($("#settingsForm"), settings);
 }
 
@@ -191,6 +202,10 @@ function renderSubscriptions() {
         <span>同步间隔 ${item.sync_interval_sec}s</span>
       </div>
       <div class="entity-metrics">
+        <span>节点总数: ${item.total_nodes ?? 0}</span>
+        <span>可用节点: ${item.available_nodes ?? 0}</span>
+        <span>失效节点: ${item.invalid_nodes ?? 0}</span>
+        <span>平均延迟: ${item.average_latency_ms ? `${item.average_latency_ms} ms` : "待测试"}</span>
         <span>最近同步: ${item.last_sync_at ? formatTime(item.last_sync_at) : "从未同步"}</span>
         <span>状态: ${item.last_sync_status || "未同步"}</span>
         <span>错误: ${escapeHTML(item.last_error || "-")}</span>
@@ -612,8 +627,7 @@ function latencyLabel(item) {
 }
 
 function speedLabel(item) {
-  const settingsForm = $("#settingsForm");
-  if (page !== "settings" && item.last_speed_mbps === null && item.last_speed_at === null) return "未启用 / 待测速";
+  if (state.settings && state.settings.speed_test_enabled === false) return "未启用";
   if (item.last_speed_mbps === null || item.last_speed_mbps === undefined) return "待测速";
   return `${Number(item.last_speed_mbps).toFixed(2)} Mbps`;
 }
