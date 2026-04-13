@@ -59,6 +59,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			failure_retry_count INTEGER NOT NULL DEFAULT 2,
 			log_level TEXT NOT NULL DEFAULT 'info',
 			speed_max_bytes INTEGER NOT NULL DEFAULT 5000000,
+			pool_port_min INTEGER NOT NULL DEFAULT 0,
+			pool_port_max INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL
 		);`,
@@ -164,6 +166,43 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.DB.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migration failed: %w", err)
 		}
+	}
+	if err := s.ensureColumn(ctx, "settings", "pool_port_min", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "settings", "pool_port_max", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+	rows, err := s.DB.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan table %s info: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate table %s info: %w", table, err)
+	}
+
+	if _, err := s.DB.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
 	}
 	return nil
 }

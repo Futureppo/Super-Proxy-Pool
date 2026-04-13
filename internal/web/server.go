@@ -6,7 +6,6 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
@@ -32,6 +31,7 @@ type App struct {
 	pools         *pools.Service
 	probe         *probe.Service
 	events        *events.Broker
+	shutdown      func()
 	loginTmpl     *template.Template
 	appTmpl       *template.Template
 }
@@ -56,7 +56,7 @@ type pageMeta struct {
 	Description string
 }
 
-func New(authSvc *auth.Service, settingsSvc *settings.Service, nodeSvc *nodes.Service, subSvc *subscriptions.Service, poolSvc *pools.Service, probeSvc *probe.Service, broker *events.Broker) (*App, error) {
+func New(authSvc *auth.Service, settingsSvc *settings.Service, nodeSvc *nodes.Service, subSvc *subscriptions.Service, poolSvc *pools.Service, probeSvc *probe.Service, broker *events.Broker, shutdown func()) (*App, error) {
 	funcs := template.FuncMap{"eq": func(a, b string) bool { return a == b }}
 	loginTmpl, err := template.New("login").Funcs(funcs).ParseFS(webassets.FS, "templates/base.html", "templates/login.html")
 	if err != nil {
@@ -74,6 +74,7 @@ func New(authSvc *auth.Service, settingsSvc *settings.Service, nodeSvc *nodes.Se
 		pools:         poolSvc,
 		probe:         probeSvc,
 		events:        broker,
+		shutdown:      shutdown,
 		loginTmpl:     loginTmpl,
 		appTmpl:       appTmpl,
 	}, nil
@@ -607,9 +608,9 @@ func (a *App) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	message := "already applied"
+	message := "已实时生效"
 	if restartRequired {
-		message = "saved; restart required"
+		message = "已保存，重启后生效"
 	} else {
 		a.publishRuntimeAsync()
 	}
@@ -628,10 +629,12 @@ func (a *App) publishRuntimeAsync() {
 }
 
 func (a *App) handleRestart(w http.ResponseWriter, r *http.Request) {
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		os.Exit(0)
-	}()
+	if a.shutdown != nil {
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			a.shutdown()
+		}()
+	}
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: map[string]bool{"restarting": true}})
 }
 

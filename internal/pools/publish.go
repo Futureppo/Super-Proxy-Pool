@@ -16,12 +16,12 @@ type PublishBundle struct {
 	ProbeConfig []byte
 }
 
-func BuildPublishBundle(secret, prodController, probeController string, probeMixedPort int, testURL string, poolList []models.ProxyPool, members map[int64][]models.RuntimeNode, inventory []models.RuntimeNode) (PublishBundle, error) {
-	prodConfig, err := buildProdConfig(secret, prodController, testURL, poolList, members)
+func BuildPublishBundle(secret, prodController, probeController string, probeMixedPort int, testURL, logLevel string, poolList []models.ProxyPool, members map[int64][]models.RuntimeNode, inventory []models.RuntimeNode) (PublishBundle, error) {
+	prodConfig, err := buildProdConfig(secret, prodController, testURL, logLevel, poolList, members)
 	if err != nil {
 		return PublishBundle{}, err
 	}
-	probeConfig, err := buildProbeConfig(secret, probeController, probeMixedPort, inventory)
+	probeConfig, err := buildProbeConfig(secret, probeController, probeMixedPort, logLevel, inventory)
 	if err != nil {
 		return PublishBundle{}, err
 	}
@@ -31,15 +31,15 @@ func BuildPublishBundle(secret, prodController, probeController string, probeMix
 	}, nil
 }
 
-func BuildProbeInventoryConfig(secret, probeController string, probeMixedPort int, inventory []models.RuntimeNode) ([]byte, error) {
-	return buildProbeConfig(secret, probeController, probeMixedPort, inventory)
+func BuildProbeInventoryConfig(secret, probeController string, probeMixedPort int, logLevel string, inventory []models.RuntimeNode) ([]byte, error) {
+	return buildProbeConfig(secret, probeController, probeMixedPort, logLevel, inventory)
 }
 
 func RuntimeNodeName(node models.RuntimeNode) string {
 	return runtimeNodeName(node)
 }
 
-func buildProdConfig(secret, controller, testURL string, poolList []models.ProxyPool, members map[int64][]models.RuntimeNode) ([]byte, error) {
+func buildProdConfig(secret, controller, testURL, logLevel string, poolList []models.ProxyPool, members map[int64][]models.RuntimeNode) ([]byte, error) {
 	type listener struct {
 		Name   string              `yaml:"name"`
 		Type   string              `yaml:"type"`
@@ -51,7 +51,7 @@ func buildProdConfig(secret, controller, testURL string, poolList []models.Proxy
 
 	root := map[string]any{
 		"mode":                "rule",
-		"log-level":           "info",
+		"log-level":           normalizeLogLevel(logLevel),
 		"allow-lan":           true,
 		"external-controller": controller,
 		"secret":              secret,
@@ -119,10 +119,10 @@ func buildProdConfig(secret, controller, testURL string, poolList []models.Proxy
 	return yaml.Marshal(root)
 }
 
-func buildProbeConfig(secret, controller string, probeMixedPort int, inventory []models.RuntimeNode) ([]byte, error) {
+func buildProbeConfig(secret, controller string, probeMixedPort int, logLevel string, inventory []models.RuntimeNode) ([]byte, error) {
 	root := map[string]any{
 		"mode":                "global",
-		"log-level":           "info",
+		"log-level":           normalizeLogLevel(logLevel),
 		"allow-lan":           false,
 		"mixed-port":          probeMixedPort,
 		"external-controller": controller,
@@ -189,4 +189,13 @@ func runtimeNodeName(node models.RuntimeNode) string {
 
 func poolGroupName(poolID int64) string {
 	return fmt.Sprintf("pool-group-%d", poolID)
+}
+
+func normalizeLogLevel(level string) string {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "trace", "debug", "info", "warning", "warn", "error", "silent":
+		return strings.ToLower(strings.TrimSpace(level))
+	default:
+		return "info"
+	}
 }

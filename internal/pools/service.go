@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"super-proxy-pool/internal/db"
@@ -89,7 +90,7 @@ func (s *Service) Get(ctx context.Context, id int64) (models.ProxyPool, error) {
 }
 
 func (s *Service) Create(ctx context.Context, req UpsertRequest) (models.ProxyPool, error) {
-	if err := s.validatePort(ctx, req.ListenPort, 0); err != nil {
+	if err := s.validateUpsertRequest(ctx, 0, req); err != nil {
 		return models.ProxyPool{}, err
 	}
 	now := time.Now().UTC()
@@ -113,7 +114,7 @@ func (s *Service) Create(ctx context.Context, req UpsertRequest) (models.ProxyPo
 }
 
 func (s *Service) Update(ctx context.Context, id int64, req UpsertRequest) (models.ProxyPool, error) {
-	if err := s.validatePort(ctx, req.ListenPort, id); err != nil {
+	if err := s.validateUpsertRequest(ctx, id, req); err != nil {
 		return models.ProxyPool{}, err
 	}
 	_, err := s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET name = ?, protocol = ?, listen_host = ?, listen_port = ?,
@@ -255,6 +256,7 @@ func (s *Service) Publish(ctx context.Context, poolID int64) error {
 		s.mihomo.ProbeControllerAddr(),
 		s.mihomo.ProbeMixedPort(),
 		settingsRow.LatencyTestURL,
+		settingsRow.LogLevel,
 		poolList,
 		members,
 		inventory,
@@ -271,8 +273,13 @@ func (s *Service) Publish(ctx context.Context, poolID int64) error {
 		s.markPublishFailure(ctx, err)
 		return err
 	}
-	_, err = s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET last_published_at = ?, last_publish_status = ?, last_error = ?, updated_at = ?`,
-		time.Now().UTC(), "published", "", time.Now().UTC())
+	for _, pool := range poolList {
+		_, err = s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET last_published_at = ?, last_publish_status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+			time.Now().UTC(), "published", "", time.Now().UTC(), pool.ID)
+		if err != nil {
+			break
+		}
+	}
 	if err == nil {
 		s.events.Publish("pools.published", map[string]string{"status": "published"})
 	}
@@ -284,11 +291,42 @@ func (s *Service) validatePort(ctx context.Context, candidatePort int, currentID
 	if err != nil {
 		return err
 	}
+	if settingsRow.PoolPortMin > 0 && settingsRow.PoolPortMax > 0 {
+		if candidatePort < settingsRow.PoolPortMin || candidatePort > settingsRow.PoolPortMax {
+			return fmt.Errorf("listen port %d is outside the allowed pool port range %d-%d", candidatePort, settingsRow.PoolPortMin, settingsRow.PoolPortMax)
+		}
+	}
 	pools, err := s.List(ctx)
 	if err != nil {
 		return err
 	}
 	return ValidatePortConflict(settingsRow.PanelPort, pools, currentID, candidatePort)
+}
+
+func (s *Service) validateUpsertRequest(ctx context.Context, currentID int64, req UpsertRequest) error {
+	if strings.TrimSpace(req.Name) == "" {
+		return fmt.Errorf("pool name is required")
+	}
+	if req.ListenPort < 1 || req.ListenPort > 65535 {
+		return fmt.Errorf("listen_port must be between 1 and 65535")
+	}
+	if err := s.validatePort(ctx, req.ListenPort, currentID); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(req.Protocol)) {
+	case "", "http", "socks":
+	default:
+		return fmt.Errorf("protocol must be http or socks")
+	}
+	if req.AuthEnabled {
+		if strings.TrimSpace(req.AuthUsername) == "" {
+			return fmt.Errorf("auth_username is required when auth is enabled")
+		}
+		if strings.TrimSpace(req.AuthPasswordSecret) == "" {
+			return fmt.Errorf("auth_password_secret is required when auth is enabled")
+		}
+	}
+	return nil
 }
 
 func (s *Service) runtimeMembersForPool(ctx context.Context, poolID int64) ([]models.RuntimeNode, error) {
@@ -346,15 +384,18 @@ func (s *Service) markPublishFailure(ctx context.Context, cause error) {
 }
 
 func ValidatePortConflict(panelPort int, pools []models.ProxyPool, currentID int64, candidatePort int) error {
+	if candidatePort < 1 || candidatePort > 65535 {
+		return fmt.Errorf("listen port must be between 1 and 65535")
+	}
 	if candidatePort == panelPort {
-		return fmt.Errorf("监听端口 %d 与面板端口冲突", candidatePort)
+		return fmt.Errorf("listen port %d conflicts with panel port", candidatePort)
 	}
 	for _, pool := range pools {
 		if pool.ID == currentID {
 			continue
 		}
 		if pool.ListenPort == candidatePort {
-			return fmt.Errorf("监听端口 %d 已被代理池 %q 使用", candidatePort, pool.Name)
+			return fmt.Errorf("listen port %d is already used by pool %q", candidatePort, pool.Name)
 		}
 	}
 	return nil

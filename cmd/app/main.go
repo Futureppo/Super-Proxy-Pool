@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -48,6 +49,17 @@ func main() {
 	authSvc := auth.NewService(settingsSvc, cfg.SessionMaxAgeSec)
 	nodeSvc := nodes.NewService(store, broker)
 	subSvc := subscriptions.NewService(store, settingsSvc, broker)
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	var shutdownOnce sync.Once
+	requestShutdown := func() {
+		shutdownOnce.Do(rootCancel)
+	}
+
+	currentSettings, err := settingsSvc.Get(context.Background())
+	if err != nil {
+		log.Fatalf("load settings: %v", err)
+	}
+
 	mihomoMgr := mihomo.NewManager(mihomo.Options{
 		BinaryPath:          cfg.MihomoBinaryPath,
 		RuntimeDir:          cfg.RuntimeDir,
@@ -56,21 +68,23 @@ func main() {
 		ProdControllerAddr:  cfg.ProdControllerAddr,
 		ProbeControllerAddr: cfg.ProbeControllerAddr,
 		ProbeMixedPort:      cfg.ProbeMixedPort,
+		InitialLogLevel:     currentSettings.LogLevel,
 	})
-	probeSvc := probe.NewService(settingsSvc, store, nodeSvc, subSvc, mihomoMgr, broker)
 	poolSvc := pools.NewService(store, settingsSvc, nodeSvc, subSvc, mihomoMgr, broker)
-
-	currentSettings, err := settingsSvc.Get(context.Background())
-	if err != nil {
-		log.Fatalf("load settings: %v", err)
-	}
+	probeSvc := probe.NewService(settingsSvc, store, nodeSvc, subSvc, poolSvc, mihomoMgr, broker)
+	subSvc.SetAfterSyncHook(func(ctx context.Context, subscriptionID int64, nodeIDs []int64) {
+		_ = subscriptionID
+		for _, nodeID := range nodeIDs {
+			_ = probeSvc.EnqueueLatency("subscription", nodeID)
+		}
+	})
 	if err := mihomoMgr.Start(context.Background(), currentSettings.MihomoControllerSecret); err != nil {
 		log.Printf("mihomo start skipped: %v", err)
 	}
-	probeSvc.Start(context.Background())
-	subSvc.StartScheduler(context.Background())
+	probeSvc.Start(rootCtx)
+	subSvc.StartScheduler(rootCtx)
 
-	webApp, err := web.New(authSvc, settingsSvc, nodeSvc, subSvc, poolSvc, probeSvc, broker)
+	webApp, err := web.New(authSvc, settingsSvc, nodeSvc, subSvc, poolSvc, probeSvc, broker, requestShutdown)
 	if err != nil {
 		log.Fatalf("build web app: %v", err)
 	}
@@ -94,12 +108,16 @@ func main() {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	go func() {
+		<-sigCh
+		requestShutdown()
+	}()
 
+	<-rootCtx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	mihomoMgr.Stop()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown error: %v", err)
 	}
+	mihomoMgr.Stop()
 }

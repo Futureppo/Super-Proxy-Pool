@@ -1,5 +1,5 @@
-const page = document.body.dataset.page;
-const subscriptionId = document.body.dataset.subscriptionId;
+const page = document.body.dataset.page || "";
+const subscriptionId = document.body.dataset.subscriptionId || "";
 
 const state = {
   settings: null,
@@ -9,44 +9,75 @@ const state = {
   pools: [],
   poolCandidates: [],
   currentPoolMembers: new Set(),
-  debounce: null,
+  eventSource: null,
+  reloadTimer: null,
 };
 
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
 document.addEventListener("DOMContentLoaded", async () => {
   bindCommon();
   connectEvents();
 
-  if (page === "login") return initLoginPage();
+  if (page === "login") {
+    initLoginPage();
+    return;
+  }
+
   await preloadSettings();
-  if (page === "subscriptions") return initSubscriptionsPage();
-  if (page === "subscription-detail") return initSubscriptionDetailPage();
-  if (page === "manual-nodes") return initManualNodesPage();
-  if (page === "pools") return initPoolsPage();
-  if (page === "settings") return initSettingsPage();
+
+  if (page === "subscriptions") {
+    await initSubscriptionsPage();
+    return;
+  }
+  if (page === "subscription-detail") {
+    await initSubscriptionDetailPage();
+    return;
+  }
+  if (page === "manual-nodes") {
+    await initManualNodesPage();
+    return;
+  }
+  if (page === "pools") {
+    await initPoolsPage();
+    return;
+  }
+  if (page === "settings") {
+    await initSettingsPage();
+  }
 });
 
 function bindCommon() {
   const logoutButton = $("#logoutButton");
-  if (logoutButton) {
-    logoutButton.addEventListener("click", async () => {
+  if (!logoutButton) return;
+  logoutButton.addEventListener("click", async () => {
+    setButtonLoading(logoutButton, true);
+    try {
       await api("/api/auth/logout", { method: "POST" });
       window.location.href = "/login";
-    });
-  }
+    } catch (error) {
+      toast(error.message, "error");
+      setButtonLoading(logoutButton, false);
+    }
+  });
 }
 
 function connectEvents() {
   if (page === "login" || !window.EventSource) return;
-  const source = new EventSource("/api/events");
-  source.onmessage = () => scheduleReload();
+  state.eventSource = new EventSource("/api/events");
+  state.eventSource.onmessage = () => scheduleReload();
+  state.eventSource.onerror = () => {
+    if (state.eventSource) {
+      state.eventSource.close();
+      state.eventSource = null;
+    }
+  };
 }
 
 function scheduleReload() {
-  clearTimeout(state.debounce);
-  state.debounce = setTimeout(() => {
+  clearTimeout(state.reloadTimer);
+  state.reloadTimer = setTimeout(() => {
     if (page === "subscriptions") loadSubscriptions();
     if (page === "subscription-detail") loadSubscriptionDetail();
     if (page === "manual-nodes") loadManualNodes();
@@ -55,58 +86,71 @@ function scheduleReload() {
       loadPoolCandidates();
     }
     if (page === "settings") loadSettings();
-  }, 350);
+  }, 250);
 }
 
-async function initLoginPage() {
-  $("#loginForm").addEventListener("submit", async (event) => {
+function initLoginPage() {
+  const form = $("#loginForm");
+  form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const body = formToJSON(event.currentTarget);
+    const button = form.querySelector("button[type=submit]");
+    setButtonLoading(button, true);
     try {
+      const body = formToJSON(form);
       await api("/api/auth/login", { method: "POST", body: JSON.stringify(body) });
       window.location.href = "/subscriptions";
     } catch (error) {
       toast(error.message, "error");
+      setButtonLoading(button, false);
     }
   });
 }
 
 async function initSubscriptionsPage() {
-  $("#subscriptionForm").addEventListener("submit", saveSubscription);
-  $("#subscriptionFormReset").addEventListener("click", () => resetForm($("#subscriptionForm")));
+  const form = $("#subscriptionForm");
+  $("#subscriptionFormReset").addEventListener("click", () => resetForm(form));
   $("#subscriptionSearch").addEventListener("input", renderSubscriptions);
+  form.addEventListener("submit", saveSubscription);
   await loadSubscriptions();
 }
 
 async function initSubscriptionDetailPage() {
   $("#subscriptionNodeSearch").addEventListener("input", renderSubscriptionNodes);
-  $("#subscriptionSyncSingleButton").addEventListener("click", async () => {
+  $("#subscriptionSyncSingleButton").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    setButtonLoading(button, true);
     try {
       await api(`/api/subscriptions/${subscriptionId}/sync`, { method: "POST" });
-      toast("已触发同步", "success");
-      loadSubscriptionDetail();
+      toast("订阅同步任务已触发", "success");
+      await loadSubscriptionDetail();
+      setButtonLoading(button, false);
     } catch (error) {
       toast(error.message, "error");
+      setButtonLoading(button, false);
     }
   });
   await loadSubscriptionDetail();
 }
 
 async function initManualNodesPage() {
-  $("#manualNodeForm").addEventListener("submit", saveManualNodes);
-  $("#manualNodeFormReset").addEventListener("click", () => resetForm($("#manualNodeForm")));
+  const form = $("#manualNodeForm");
+  $("#manualNodeFormReset").addEventListener("click", () => resetForm(form));
   $("#manualNodeSearch").addEventListener("input", renderManualNodes);
+  $("#manualNodeStatusFilter").addEventListener("change", renderManualNodes);
+  $("#manualNodeProtocolFilter").addEventListener("change", renderManualNodes);
+  form.addEventListener("submit", saveManualNodes);
   await loadManualNodes();
 }
 
 async function initPoolsPage() {
-  $("#poolForm").addEventListener("submit", savePool);
+  const form = $("#poolForm");
   $("#poolFormReset").addEventListener("click", () => resetPoolForm());
   $("#poolMemberSearch").addEventListener("input", renderPoolCandidates);
   $("#poolMemberSourceFilter").addEventListener("change", renderPoolCandidates);
   $("#poolMemberProtocolFilter").addEventListener("change", renderPoolCandidates);
   $("#poolMemberStatusFilter").addEventListener("change", renderPoolCandidates);
   $("#poolMemberSelectFiltered").addEventListener("click", selectFilteredMembers);
+  form.addEventListener("submit", savePool);
   await Promise.all([loadPools(), loadPoolCandidates()]);
 }
 
@@ -126,29 +170,37 @@ async function preloadSettings() {
 }
 
 async function loadSubscriptions() {
+  setContainerLoading("#subscriptionList", "加载订阅中...");
   state.subscriptions = await api("/api/subscriptions");
   renderSubscriptions();
 }
 
 async function loadSubscriptionDetail() {
-  const detail = await api(`/api/subscriptions/${subscriptionId}`);
-  const nodes = await api(`/api/subscriptions/${subscriptionId}/nodes`);
+  setContainerLoading("#subscriptionNodeList", "加载节点中...");
+  const [detail, nodes] = await Promise.all([
+    api(`/api/subscriptions/${subscriptionId}`),
+    api(`/api/subscriptions/${subscriptionId}/nodes`),
+  ]);
   state.subscriptionNodes = nodes;
-  $("#subscriptionDetailMeta").innerHTML = `
-    <div class="badge">${detail.name}</div>
-    <div class="badge">${maskUrl(detail.url)}</div>
-    <div class="badge">${detail.last_sync_status || "未同步"}</div>
-    <div class="badge">${detail.last_sync_at ? formatTime(detail.last_sync_at) : "从未同步"}</div>
-  `;
+  const meta = $("#subscriptionDetailMeta");
+  meta.innerHTML = [
+    badgeHTML(escapeHTML(detail.name)),
+    badgeHTML(maskUrl(detail.url)),
+    badgeHTML(detail.enabled ? "已启用" : "已禁用", detail.enabled ? "available" : "disabled"),
+    badgeHTML(detail.last_sync_status || "未同步", syncStatusClass(detail.last_sync_status)),
+    badgeHTML(detail.last_sync_at ? `最近同步：${formatTime(detail.last_sync_at)}` : "从未同步"),
+  ].join("");
   renderSubscriptionNodes();
 }
 
 async function loadManualNodes() {
+  setContainerLoading("#manualNodeList", "加载节点中...");
   state.manualNodes = await api("/api/manual-nodes");
   renderManualNodes();
 }
 
 async function loadPools() {
+  setContainerLoading("#poolList", "加载代理池中...");
   state.pools = await api("/api/pools");
   renderPools();
 }
@@ -167,9 +219,14 @@ async function loadSettings() {
 async function saveSubscription(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  const button = form.querySelector("button[type=submit]");
+  setButtonLoading(button, true);
+
   const payload = formToJSON(form);
-  payload.enabled = !!form.elements.namedItem("enabled").checked;
+  payload.enabled = Boolean(form.elements.namedItem("enabled").checked);
   payload.sync_interval_sec = Number(payload.sync_interval_sec || 0);
+  if (!payload.headers_json) delete payload.headers_json;
+
   try {
     if (payload.id) {
       await api(`/api/subscriptions/${payload.id}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -179,207 +236,270 @@ async function saveSubscription(event) {
       toast("订阅已创建", "success");
     }
     resetForm(form);
-    loadSubscriptions();
+    await loadSubscriptions();
+    setButtonLoading(button, false);
   } catch (error) {
     toast(error.message, "error");
+    setButtonLoading(button, false);
   }
 }
 
 function renderSubscriptions() {
-  const keyword = ($("#subscriptionSearch")?.value || "").toLowerCase().trim();
+  const keyword = ($("#subscriptionSearch")?.value || "").trim().toLowerCase();
   const list = state.subscriptions.filter((item) => {
     if (!keyword) return true;
-    return `${item.name} ${item.url}`.toLowerCase().includes(keyword);
+    return `${item.name} ${item.url} ${item.last_sync_status || ""}`.toLowerCase().includes(keyword);
   });
-  $("#subscriptionList").innerHTML = list.map((item) => `
-    <article class="entity-card">
-      <div class="entity-head">
-        <div class="entity-title">${escapeHTML(item.name)}</div>
-        <span class="badge ${item.enabled ? "available" : "disabled"}">${item.enabled ? "启用" : "禁用"}</span>
-      </div>
-      <div class="entity-meta muted">
-        <span>${maskUrl(item.url)}</span>
-        <span>同步间隔 ${item.sync_interval_sec}s</span>
-      </div>
-      <div class="entity-metrics">
-        <span>节点总数: ${item.total_nodes ?? 0}</span>
-        <span>可用节点: ${item.available_nodes ?? 0}</span>
-        <span>失效节点: ${item.invalid_nodes ?? 0}</span>
-        <span>平均延迟: ${item.average_latency_ms ? `${item.average_latency_ms} ms` : "待测试"}</span>
-        <span>最近同步: ${item.last_sync_at ? formatTime(item.last_sync_at) : "从未同步"}</span>
-        <span>状态: ${item.last_sync_status || "未同步"}</span>
-        <span>错误: ${escapeHTML(item.last_error || "-")}</span>
-      </div>
-      <div class="entity-actions">
-        <button data-action="sync" data-id="${item.id}">立即同步</button>
-        <button class="secondary" data-action="detail" data-id="${item.id}">查看详情</button>
-        <button class="secondary" data-action="edit" data-id="${item.id}">编辑</button>
-        <button class="secondary" data-action="toggle" data-id="${item.id}">${item.enabled ? "禁用" : "启用"}</button>
-        <button class="danger" data-action="delete" data-id="${item.id}">删除</button>
-      </div>
-    </article>
-  `).join("");
-  $$("#subscriptionList [data-action]").forEach((button) => button.addEventListener("click", onSubscriptionAction));
-}
 
-async function onSubscriptionAction(event) {
-  const id = event.currentTarget.dataset.id;
-  const action = event.currentTarget.dataset.action;
-  const item = state.subscriptions.find((entry) => String(entry.id) === String(id));
-  if (!item) return;
-
-  try {
-    if (action === "detail") return window.location.href = `/subscriptions/${id}`;
-    if (action === "edit") {
-      fillForm($("#subscriptionForm"), item);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
-    }
-    if (action === "sync") {
-      await api(`/api/subscriptions/${id}/sync`, { method: "POST" });
-      toast("订阅同步任务已执行", "success");
-    }
-    if (action === "toggle") {
-      await api(`/api/subscriptions/${id}`, { method: "PUT", body: JSON.stringify({ ...item, enabled: !item.enabled }) });
-      toast("订阅状态已更新", "success");
-    }
-    if (action === "delete") {
-      if (!confirm("确认删除该订阅？")) return;
-      await api(`/api/subscriptions/${id}`, { method: "DELETE" });
-      toast("订阅已删除", "success");
-    }
-    loadSubscriptions();
-  } catch (error) {
-    toast(error.message, "error");
+  const container = $("#subscriptionList");
+  if (!list.length) {
+    container.innerHTML = `<div class="empty-state">暂无订阅，或当前筛选条件下没有结果。</div>`;
+    return;
   }
+
+  container.innerHTML = list.map(renderSubscriptionCard).join("");
+  bindActionButtons(container, onSubscriptionAction);
 }
 
-function renderSubscriptionNodes() {
-  const keyword = ($("#subscriptionNodeSearch")?.value || "").toLowerCase().trim();
-  const list = state.subscriptionNodes.filter((item) => {
-    if (!keyword) return true;
-    return `${item.display_name} ${item.server} ${item.protocol}`.toLowerCase().includes(keyword);
-  });
-  $("#subscriptionNodeList").innerHTML = list.map((item) => renderNodeCard(item, "subscription")).join("");
-  bindNodeCardActions("#subscriptionNodeList", "subscription");
-}
-
-async function saveManualNodes(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const id = form.id.value;
-  const content = form.content.value;
-  try {
-    if (id) {
-      await api(`/api/manual-nodes/${id}`, { method: "PUT", body: JSON.stringify({ raw_payload: content }) });
-      toast("节点已更新", "success");
-    } else {
-      const result = await api("/api/manual-nodes", { method: "POST", body: JSON.stringify({ content }) });
-      if (result.parse_errors?.length) {
-        toast(`已保存，部分节点解析失败：${result.parse_errors[0]}`, "info");
-      } else {
-        toast("节点已导入", "success");
-      }
-    }
-    resetForm(form);
-    loadManualNodes();
-  } catch (error) {
-    toast(error.message, "error");
-  }
-}
-
-function renderManualNodes() {
-  const keyword = ($("#manualNodeSearch")?.value || "").toLowerCase().trim();
-  const list = state.manualNodes.filter((item) => {
-    if (!keyword) return true;
-    return `${item.display_name} ${item.server} ${item.protocol}`.toLowerCase().includes(keyword);
-  });
-  $("#manualNodeList").innerHTML = list.map((item) => renderNodeCard(item, "manual")).join("");
-  bindNodeCardActions("#manualNodeList", "manual");
-}
-
-function renderNodeCard(item, sourceType) {
+function renderSubscriptionCard(item) {
   return `
     <article class="entity-card">
       <div class="entity-head">
-        <div class="entity-title">${escapeHTML(item.display_name)}</div>
-        <span class="badge ${statusClass(item)}">${statusText(item)}</span>
+        <div class="entity-title">${escapeHTML(item.name)}</div>
+        <span class="badge ${item.enabled ? "available" : "disabled"}">${item.enabled ? "已启用" : "已禁用"}</span>
       </div>
       <div class="entity-meta muted">
-        <span>${escapeHTML(item.protocol)}</span>
-        <span>${escapeHTML(item.server)}:${item.port}</span>
+        <span>${maskUrl(item.url)}</span>
+        <span>同步间隔 ${Number(item.sync_interval_sec || 0)} 秒</span>
       </div>
       <div class="entity-metrics">
-        <span>延迟: ${latencyLabel(item)}</span>
-        <span>速率: ${speedLabel(item)}</span>
-        <span>最近测试: ${formatTime(item.last_test_at || item.last_speed_at)}</span>
+        <span>节点总数：${item.total_nodes ?? 0}</span>
+        <span>可用节点：${item.available_nodes ?? 0}</span>
+        <span>失效节点：${item.invalid_nodes ?? 0}</span>
+        <span>平均延迟：${item.average_latency_ms ? `${item.average_latency_ms} ms` : "待测试"}</span>
+        <span>最近同步：${item.last_sync_at ? formatTime(item.last_sync_at) : "从未同步"}</span>
+        <span>同步状态：${escapeHTML(item.last_sync_status || "未同步")}</span>
       </div>
       <div class="entity-actions">
-        <button data-source="${sourceType}" data-id="${item.id}" data-action="latency">延迟测试</button>
-        <button data-source="${sourceType}" data-id="${item.id}" data-action="speed">测速</button>
-        <button class="secondary" data-source="${sourceType}" data-id="${item.id}" data-action="toggle">${item.enabled ? "禁用" : "启用"}</button>
-        ${sourceType === "manual" ? `<button class="secondary" data-source="${sourceType}" data-id="${item.id}" data-action="edit">编辑</button><button class="danger" data-source="${sourceType}" data-id="${item.id}" data-action="delete">删除</button>` : ""}
+        <button type="button" data-action="sync" data-id="${item.id}" data-loading-text="同步中...">立即同步</button>
+        <button type="button" class="secondary" data-action="detail" data-id="${item.id}">查看详情</button>
+        <button type="button" class="secondary" data-action="edit" data-id="${item.id}">编辑</button>
+        <button type="button" class="secondary" data-action="toggle" data-id="${item.id}" data-loading-text="切换中...">${item.enabled ? "禁用" : "启用"}</button>
+        <button type="button" class="danger" data-action="delete" data-id="${item.id}" data-loading-text="删除中...">删除</button>
       </div>
     </article>
   `;
 }
 
-function bindNodeCardActions(rootSelector, sourceType) {
-  $$(`${rootSelector} [data-action]`).forEach((button) => button.addEventListener("click", async (event) => {
-    const id = event.currentTarget.dataset.id;
-    const action = event.currentTarget.dataset.action;
-    try {
-      if (action === "latency") {
-        const path = sourceType === "manual"
-          ? `/api/manual-nodes/${id}/latency-test`
-          : `/api/subscriptions/${subscriptionId}/nodes/${id}/latency-test`;
-        await api(path, { method: "POST" });
-        toast("已触发延迟测试", "success");
-      }
-      if (action === "speed") {
-        const path = sourceType === "manual"
-          ? `/api/manual-nodes/${id}/speed-test`
-          : `/api/subscriptions/${subscriptionId}/nodes/${id}/speed-test`;
-        await api(path, { method: "POST" });
-        toast("已触发测速", "success");
-      }
-      if (action === "toggle") {
-        const path = sourceType === "manual"
-          ? `/api/manual-nodes/${id}/toggle`
-          : `/api/subscriptions/${subscriptionId}/nodes/${id}/toggle`;
-        await api(path, { method: "POST" });
-        toast("状态已更新", "success");
-      }
-      if (action === "edit") {
-        const item = state.manualNodes.find((entry) => String(entry.id) === String(id));
-        if (item) {
-          $("#manualNodeForm").elements.namedItem("id").value = item.id;
-          $("#manualNodeForm").elements.namedItem("content").value = item.raw_payload;
-          window.scrollTo({ top: 0, behavior: "smooth" });
-        }
+async function onSubscriptionAction(event) {
+  const button = event.currentTarget;
+  const id = button.dataset.id;
+  const action = button.dataset.action;
+  const item = state.subscriptions.find((entry) => String(entry.id) === String(id));
+  if (!item) return;
+
+  try {
+    if (action === "detail") {
+      window.location.href = `/subscriptions/${id}`;
+      return;
+    }
+    if (action === "edit") {
+      fillForm($("#subscriptionForm"), item);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    setButtonLoading(button, true);
+
+    if (action === "sync") {
+      await api(`/api/subscriptions/${id}/sync`, { method: "POST" });
+      toast("订阅同步任务已触发", "success");
+    } else if (action === "toggle") {
+      await api(`/api/subscriptions/${id}`, { method: "PUT", body: JSON.stringify({ ...item, enabled: !item.enabled }) });
+      toast(item.enabled ? "订阅已禁用" : "订阅已启用", "success");
+    } else if (action === "delete") {
+      if (!confirm("确认删除该订阅？")) {
+        setButtonLoading(button, false);
         return;
       }
-      if (action === "delete") {
-        if (!confirm("确认删除该节点？")) return;
-        await api(`/api/manual-nodes/${id}`, { method: "DELETE" });
-        toast("节点已删除", "success");
-      }
-      if (sourceType === "manual") loadManualNodes(); else loadSubscriptionDetail();
-    } catch (error) {
-      toast(error.message, "error");
+      await api(`/api/subscriptions/${id}`, { method: "DELETE" });
+      toast("订阅已删除", "success");
     }
-  }));
+    await loadSubscriptions();
+  } catch (error) {
+    toast(error.message, "error");
+    setButtonLoading(button, false);
+  }
+}
+
+function renderSubscriptionNodes() {
+  const keyword = ($("#subscriptionNodeSearch")?.value || "").trim().toLowerCase();
+  const list = state.subscriptionNodes.filter((item) => {
+    if (!keyword) return true;
+    return `${item.display_name} ${item.protocol} ${item.server} ${item.last_status || ""}`.toLowerCase().includes(keyword);
+  });
+  const container = $("#subscriptionNodeList");
+  if (!list.length) {
+    container.innerHTML = `<div class="empty-state">暂无节点，或当前筛选条件下没有结果。</div>`;
+    return;
+  }
+  container.innerHTML = list.map((item) => renderNodeCard(item, "subscription")).join("");
+  bindNodeCardActions(container, "subscription");
+}
+
+async function saveManualNodes(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector("button[type=submit]");
+  setButtonLoading(button, true);
+
+  const id = form.elements.namedItem("id").value;
+  const content = form.elements.namedItem("content").value;
+  const payload = id ? { raw_payload: content } : { content };
+
+  try {
+    if (id) {
+      await api(`/api/manual-nodes/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+      toast("节点已更新", "success");
+    } else {
+      const result = await api("/api/manual-nodes", { method: "POST", body: JSON.stringify(payload) });
+      const failed = result?.parse_errors?.length || 0;
+      toast(failed ? `节点已导入，${failed} 条解析失败` : "节点已导入", failed ? "info" : "success");
+    }
+    resetForm(form);
+    await loadManualNodes();
+    setButtonLoading(button, false);
+  } catch (error) {
+    toast(error.message, "error");
+    setButtonLoading(button, false);
+  }
+}
+
+function renderManualNodes() {
+  const keyword = ($("#manualNodeSearch")?.value || "").trim().toLowerCase();
+  const statusFilter = $("#manualNodeStatusFilter")?.value || "";
+  const protocolFilter = $("#manualNodeProtocolFilter")?.value || "";
+  const list = state.manualNodes.filter((item) => {
+    if (keyword && !`${item.display_name} ${item.server} ${item.protocol}`.toLowerCase().includes(keyword)) return false;
+    if (statusFilter && normalizeStatus(item) !== statusFilter) return false;
+    if (protocolFilter && item.protocol !== protocolFilter) return false;
+    return true;
+  });
+
+  const container = $("#manualNodeList");
+  if (!list.length) {
+    container.innerHTML = `<div class="empty-state">暂无手动节点，或当前筛选条件下没有结果。</div>`;
+    return;
+  }
+  container.innerHTML = list.map((item) => renderNodeCard(item, "manual")).join("");
+  bindNodeCardActions(container, "manual");
+}
+
+function renderNodeCard(item, sourceType) {
+  return `
+    <article class="entity-card node-card">
+      <div class="entity-head">
+        <div>
+          <div class="entity-title">${escapeHTML(item.display_name || "未命名节点")}</div>
+          <div class="entity-meta muted">
+            <span>${escapeHTML(item.protocol || "-")}</span>
+            <span>${escapeHTML(item.server || "-")}:${escapeHTML(item.port ?? "-")}</span>
+          </div>
+        </div>
+        <span class="badge ${statusClass(item)}">${statusText(item)}</span>
+      </div>
+      <div class="entity-metrics">
+        <span>延迟：${latencyLabel(item)}</span>
+        <span>速率：${speedLabel(item)}</span>
+        <span>最近测试：${formatTime(item.last_test_at || item.last_speed_at)}</span>
+      </div>
+      <div class="entity-actions">
+        <button type="button" data-source="${sourceType}" data-id="${item.id}" data-action="latency" data-loading-text="测试中...">延迟测试</button>
+        <button type="button" data-source="${sourceType}" data-id="${item.id}" data-action="speed" data-loading-text="测速中...">测速</button>
+        <button type="button" class="secondary" data-source="${sourceType}" data-id="${item.id}" data-action="toggle" data-loading-text="切换中...">${item.enabled ? "禁用" : "启用"}</button>
+        ${sourceType === "manual" ? `
+          <button type="button" class="secondary" data-source="${sourceType}" data-id="${item.id}" data-action="edit">编辑</button>
+          <button type="button" class="danger" data-source="${sourceType}" data-id="${item.id}" data-action="delete" data-loading-text="删除中...">删除</button>
+        ` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function bindNodeCardActions(container, sourceType) {
+  $$("button[data-action]", container).forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      const current = event.currentTarget;
+      const action = current.dataset.action;
+      const id = current.dataset.id;
+
+      try {
+        if (action === "edit" && sourceType === "manual") {
+          const item = state.manualNodes.find((entry) => String(entry.id) === String(id));
+          if (!item) return;
+          fillForm($("#manualNodeForm"), { id: item.id, content: item.raw_payload || "" });
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          return;
+        }
+
+        setButtonLoading(current, true);
+        await triggerNodeAction(sourceType, id, action);
+        if (sourceType === "manual") {
+          await loadManualNodes();
+        } else {
+          await loadSubscriptionDetail();
+        }
+      } catch (error) {
+        if (error.message !== "已取消删除") {
+          toast(error.message, "error");
+        }
+        setButtonLoading(current, false);
+      }
+    });
+  });
+}
+
+async function triggerNodeAction(sourceType, id, action) {
+  const base = sourceType === "manual"
+    ? `/api/manual-nodes/${id}`
+    : `/api/subscriptions/${subscriptionId}/nodes/${id}`;
+
+  if (action === "latency") {
+    await api(`${base}/latency-test`, { method: "POST" });
+    toast("已触发延迟测试", "success");
+    return;
+  }
+  if (action === "speed") {
+    await api(`${base}/speed-test`, { method: "POST" });
+    toast("已触发测速", "success");
+    return;
+  }
+  if (action === "toggle") {
+    await api(`${base}/toggle`, { method: "POST" });
+    toast("节点状态已更新", "success");
+    return;
+  }
+  if (action === "delete" && sourceType === "manual") {
+    if (!confirm("确认删除该节点？")) throw new Error("已取消删除");
+    await api(base, { method: "DELETE" });
+    toast("节点已删除", "success");
+  }
 }
 
 async function savePool(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  const button = form.querySelector("button[type=submit]");
+  setButtonLoading(button, true);
+
   const payload = formToJSON(form);
   payload.listen_port = Number(payload.listen_port);
-  payload.auth_enabled = !!form.elements.namedItem("auth_enabled").checked;
-  payload.failover_enabled = !!form.elements.namedItem("failover_enabled").checked;
-  payload.enabled = !!form.elements.namedItem("enabled").checked;
-  const memberPayload = getSelectedMembers();
+  payload.auth_enabled = Boolean(form.elements.namedItem("auth_enabled").checked);
+  payload.failover_enabled = Boolean(form.elements.namedItem("failover_enabled").checked);
+  payload.enabled = Boolean(form.elements.namedItem("enabled").checked);
+  payload.members = getSelectedMembers();
+  const memberPayload = payload.members;
+  delete payload.members;
 
   try {
     let saved;
@@ -392,60 +512,69 @@ async function savePool(event) {
     toast("代理池已保存", "success");
     resetPoolForm();
     await Promise.all([loadPools(), loadPoolCandidates()]);
+    setButtonLoading(button, false);
   } catch (error) {
     toast(error.message, "error");
+    setButtonLoading(button, false);
   }
 }
 
 function renderPools() {
-  $("#poolList").innerHTML = state.pools.map((item) => `
+  const container = $("#poolList");
+  if (!state.pools.length) {
+    container.innerHTML = `<div class="empty-state">暂无代理池，先创建一个代理池吧。</div>`;
+    return;
+  }
+
+  container.innerHTML = state.pools.map((item) => `
     <article class="entity-card">
       <div class="entity-head">
         <div class="entity-title">${escapeHTML(item.name)}</div>
         <span class="badge ${item.enabled ? "available" : "disabled"}">${item.enabled ? "运行中" : "已停用"}</span>
       </div>
       <div class="entity-meta muted">
-        <span>${item.protocol.toUpperCase()}</span>
-        <span>${escapeHTML(item.listen_host)}:${item.listen_port}</span>
-        <span>${item.strategy}</span>
+        <span>${escapeHTML(String(item.protocol || "").toUpperCase())}</span>
+        <span>${escapeHTML(item.listen_host)}:${escapeHTML(item.listen_port)}</span>
+        <span>${escapeHTML(item.strategy || "-")}</span>
       </div>
       <div class="entity-metrics">
-        <span>成员数: ${item.current_member_count}</span>
-        <span>健康数: ${item.current_healthy_count}</span>
-        <span>认证: ${item.auth_enabled ? "开启" : "关闭"}</span>
-        <span>发布时间: ${formatTime(item.last_published_at)}</span>
+        <span>成员数：${item.current_member_count ?? 0}</span>
+        <span>健康数：${item.current_healthy_count ?? 0}</span>
+        <span>认证：${item.auth_enabled ? "已开启" : "已关闭"}</span>
+        <span>最近发布：${formatTime(item.last_published_at)}</span>
       </div>
-      <div class="entity-meta muted">
-        <span>连接: <code>${escapeHTML(poolConnectAddress(item))}</code></span>
-        ${item.auth_enabled ? `<span>用户名: <code>${escapeHTML(item.auth_username || "-")}</code></span>` : ""}
-        ${item.auth_enabled ? `<span>密码: <code data-role="pool-password" data-secret="${escapeHTML(item.auth_password_secret || "")}">******</code></span>` : ""}
+      <div class="entity-meta muted pool-connection">
+        <span>连接：<code>${escapeHTML(poolConnectAddress(item))}</code></span>
+        ${item.auth_enabled ? `<span>用户名：<code>${escapeHTML(item.auth_username || "-")}</code></span>` : ""}
+        ${item.auth_enabled ? `<span>密码：<code data-role="pool-password" data-secret="${escapeHTML(item.auth_password_secret || "")}">******</code></span>` : ""}
       </div>
       <div class="entity-actions">
-        ${item.auth_enabled ? `<button class="secondary" data-action="toggle-secret" data-id="${item.id}">显示密码</button>` : ""}
-        <button class="secondary" data-action="copy" data-id="${item.id}">复制连接信息</button>
-        <button class="secondary" data-action="edit" data-id="${item.id}">编辑</button>
-        <button class="secondary" data-action="toggle" data-id="${item.id}">${item.enabled ? "禁用" : "启用"}</button>
-        <button data-action="publish" data-id="${item.id}">刷新发布</button>
-        <button class="danger" data-action="delete" data-id="${item.id}">删除</button>
+        ${item.auth_enabled ? `<button type="button" class="secondary" data-action="toggle-secret" data-id="${item.id}">显示密码</button>` : ""}
+        <button type="button" class="secondary" data-action="copy" data-id="${item.id}">复制连接信息</button>
+        <button type="button" class="secondary" data-action="edit" data-id="${item.id}">编辑</button>
+        <button type="button" class="secondary" data-action="toggle" data-id="${item.id}" data-loading-text="切换中...">${item.enabled ? "禁用" : "启用"}</button>
+        <button type="button" data-action="publish" data-id="${item.id}" data-loading-text="发布中...">刷新发布</button>
+        <button type="button" class="danger" data-action="delete" data-id="${item.id}" data-loading-text="删除中...">删除</button>
       </div>
     </article>
   `).join("");
-  $$("#poolList [data-action]").forEach((button) => button.addEventListener("click", onPoolAction));
+  bindActionButtons(container, onPoolAction);
 }
 
 async function onPoolAction(event) {
-  const id = event.currentTarget.dataset.id;
-  const action = event.currentTarget.dataset.action;
+  const button = event.currentTarget;
+  const id = button.dataset.id;
+  const action = button.dataset.action;
   const item = state.pools.find((entry) => String(entry.id) === String(id));
   if (!item) return;
+
   try {
     if (action === "toggle-secret") {
-      const secretNode = event.currentTarget.closest(".entity-card").querySelector("[data-role=pool-password]");
-      if (secretNode) {
-        const revealed = secretNode.textContent !== "******";
-        secretNode.textContent = revealed ? "******" : secretNode.dataset.secret || "";
-        event.currentTarget.textContent = revealed ? "显示密码" : "隐藏密码";
-      }
+      const secretNode = button.closest(".entity-card")?.querySelector("[data-role=pool-password]");
+      if (!secretNode) return;
+      const revealed = secretNode.textContent !== "******";
+      secretNode.textContent = revealed ? "******" : (secretNode.dataset.secret || "");
+      button.textContent = revealed ? "显示密码" : "隐藏密码";
       return;
     }
     if (action === "copy") {
@@ -455,36 +584,41 @@ async function onPoolAction(event) {
     }
     if (action === "edit") {
       fillForm($("#poolForm"), item);
-      $("#poolForm").elements.namedItem("auth_enabled").checked = item.auth_enabled;
-      $("#poolForm").elements.namedItem("failover_enabled").checked = item.failover_enabled;
-      $("#poolForm").elements.namedItem("enabled").checked = item.enabled;
+      $("#poolForm").elements.namedItem("auth_enabled").checked = Boolean(item.auth_enabled);
+      $("#poolForm").elements.namedItem("failover_enabled").checked = Boolean(item.failover_enabled);
+      $("#poolForm").elements.namedItem("enabled").checked = Boolean(item.enabled);
       const memberState = await api(`/api/pools/${id}/members`);
-      state.currentPoolMembers = new Set(memberState.members.map((entry) => `${entry.source_type}:${entry.source_node_id}`));
+      state.currentPoolMembers = new Set((memberState.members || []).map((entry) => `${entry.source_type}:${entry.source_node_id}`));
       renderPoolCandidates();
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
+
+    setButtonLoading(button, true);
+
     if (action === "toggle") {
       await api(`/api/pools/${id}/toggle`, { method: "POST" });
-      toast("代理池状态已更新", "success");
-    }
-    if (action === "publish") {
+      toast(item.enabled ? "代理池已禁用" : "代理池已启用", "success");
+    } else if (action === "publish") {
       await api(`/api/pools/${id}/publish`, { method: "POST" });
-      toast("代理池已标记为重新发布", "success");
-    }
-    if (action === "delete") {
-      if (!confirm("确认删除该代理池？")) return;
+      toast("代理池已刷新发布", "success");
+    } else if (action === "delete") {
+      if (!confirm("确认删除该代理池？")) {
+        setButtonLoading(button, false);
+        return;
+      }
       await api(`/api/pools/${id}`, { method: "DELETE" });
       toast("代理池已删除", "success");
     }
-    loadPools();
+    await loadPools();
   } catch (error) {
     toast(error.message, "error");
+    setButtonLoading(button, false);
   }
 }
 
 function renderPoolCandidates() {
-  const keyword = ($("#poolMemberSearch")?.value || "").toLowerCase().trim();
+  const keyword = ($("#poolMemberSearch")?.value || "").trim().toLowerCase();
   const source = $("#poolMemberSourceFilter")?.value || "";
   const protocol = $("#poolMemberProtocolFilter")?.value || "";
   const status = $("#poolMemberStatusFilter")?.value || "";
@@ -492,10 +626,17 @@ function renderPoolCandidates() {
     if (keyword && !`${item.display_name} ${item.server} ${item.protocol} ${item.source_label}`.toLowerCase().includes(keyword)) return false;
     if (source && item.source_type !== source) return false;
     if (protocol && item.protocol !== protocol) return false;
-    if (status && item.last_status !== status) return false;
+    if (status && normalizeStatus(item) !== status) return false;
     return true;
   });
-  $("#poolMemberList").innerHTML = filtered.map((item) => {
+
+  const container = $("#poolMemberList");
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty-state">没有匹配的候选节点。</div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map((item) => {
     const key = `${item.source_type}:${item.source_node_id}`;
     const checked = state.currentPoolMembers.has(key) ? "checked" : "";
     return `
@@ -503,21 +644,28 @@ function renderPoolCandidates() {
         <input type="checkbox" value="${key}" ${checked}>
         <div>
           <strong>${escapeHTML(item.display_name)}</strong>
-          <div class="muted">${escapeHTML(item.source_label)} · ${escapeHTML(item.protocol)} · ${escapeHTML(item.server)}:${item.port}</div>
-          <div class="muted">状态: ${item.last_status || "unknown"} · 延迟: ${latencyLabel(item)}</div>
+          <div class="muted">${escapeHTML(item.source_label)} · ${escapeHTML(item.protocol)} · ${escapeHTML(item.server)}:${escapeHTML(item.port)}</div>
+          <div class="muted">状态：${statusText(item)} · 延迟：${latencyLabel(item)}</div>
         </div>
       </label>
     `;
   }).join("");
-  $$("#poolMemberList input[type=checkbox]").forEach((checkbox) => checkbox.addEventListener("change", (event) => {
-    const key = event.currentTarget.value;
-    if (event.currentTarget.checked) state.currentPoolMembers.add(key);
-    else state.currentPoolMembers.delete(key);
-  }));
+
+  $$("input[type=checkbox]", container).forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const key = event.currentTarget.value;
+      if (event.currentTarget.checked) {
+        state.currentPoolMembers.add(key);
+      } else {
+        state.currentPoolMembers.delete(key);
+      }
+    });
+  });
 }
 
 function selectFilteredMembers() {
-  $$("#poolMemberList input[type=checkbox]").forEach((checkbox) => {
+  const checkboxes = $$("input[type=checkbox]", $("#poolMemberList"));
+  checkboxes.forEach((checkbox) => {
     checkbox.checked = true;
     state.currentPoolMembers.add(checkbox.value);
   });
@@ -526,82 +674,109 @@ function selectFilteredMembers() {
 function getSelectedMembers() {
   return Array.from(state.currentPoolMembers).map((value) => {
     const [source_type, source_node_id] = value.split(":");
-    return { source_type, source_node_id: Number(source_node_id), enabled: true, weight: 1 };
+    return {
+      source_type,
+      source_node_id: Number(source_node_id),
+      enabled: true,
+      weight: 1,
+    };
   });
 }
 
 async function saveSettings(event) {
   event.preventDefault();
   const form = event.currentTarget;
+  const button = form.querySelector("button[type=submit]");
+  setButtonLoading(button, true);
+
   const payload = formToJSON(form);
   payload.panel_port = Number(payload.panel_port);
-  payload.speed_test_enabled = !!form.elements.namedItem("speed_test_enabled").checked;
+  payload.speed_test_enabled = Boolean(form.elements.namedItem("speed_test_enabled").checked);
   payload.latency_timeout_ms = Number(payload.latency_timeout_ms);
   payload.speed_timeout_ms = Number(payload.speed_timeout_ms);
   payload.latency_concurrency = Number(payload.latency_concurrency);
   payload.speed_concurrency = Number(payload.speed_concurrency);
+  payload.speed_max_bytes = Number(payload.speed_max_bytes);
   payload.default_subscription_interval_sec = Number(payload.default_subscription_interval_sec);
   payload.failure_retry_count = Number(payload.failure_retry_count);
-  payload.speed_max_bytes = Number(payload.speed_max_bytes);
+  payload.pool_port_min = Number(payload.pool_port_min || 0);
+  payload.pool_port_max = Number(payload.pool_port_max || 0);
+
   try {
     const result = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
     toast(result.apply_message || "设置已保存", "success");
-    loadSettings();
+    await loadSettings();
+    setButtonLoading(button, false);
   } catch (error) {
     toast(error.message, "error");
+    setButtonLoading(button, false);
   }
 }
 
 async function changePassword(event) {
   event.preventDefault();
-  const payload = formToJSON(event.currentTarget);
+  const form = event.currentTarget;
+  const button = form.querySelector("button[type=submit]");
+  setButtonLoading(button, true);
+
   try {
-    await api("/api/auth/change-password", { method: "POST", body: JSON.stringify(payload) });
+    await api("/api/auth/change-password", { method: "POST", body: JSON.stringify(formToJSON(form)) });
     toast("密码已修改，请重新登录", "success");
-    setTimeout(() => window.location.href = "/login", 800);
+    setTimeout(() => {
+      window.location.href = "/login";
+    }, 700);
   } catch (error) {
     toast(error.message, "error");
+    setButtonLoading(button, false);
   }
 }
 
 async function restartSystem() {
+  const button = $("#restartButton");
   if (!confirm("确认重启系统？")) return;
+  setButtonLoading(button, true);
   try {
     await api("/api/system/restart", { method: "POST" });
-    toast("系统准备退出，若已设置 Docker restart policy 将自动拉起", "info");
+    toast("系统即将退出，Docker restart policy 会负责拉起", "info");
   } catch (error) {
     toast(error.message, "error");
+    setButtonLoading(button, false);
   }
 }
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
     ...options,
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.success === false) {
-    throw new Error(data.message || `request failed: ${response.status}`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.message || `request failed: ${response.status}`);
   }
-  return data.data;
+  return payload.data;
 }
 
 function formToJSON(form) {
   const payload = {};
-  new FormData(form).forEach((value, key) => payload[key] = value);
+  new FormData(form).forEach((value, key) => {
+    payload[key] = value;
+  });
   return payload;
 }
 
 function fillForm(form, payload) {
-  Object.entries(payload).forEach(([key, value]) => {
+  Object.entries(payload || {}).forEach(([key, value]) => {
     const field = form.elements.namedItem(key);
     if (!field || value === null || value === undefined) return;
     if (field.type === "checkbox") {
-      field.checked = !!value;
-      return;
+      field.checked = Boolean(value);
+    } else {
+      field.value = value;
     }
-    field.value = value;
   });
 }
 
@@ -612,7 +787,13 @@ function resetForm(form) {
 }
 
 function resetPoolForm() {
-  resetForm($("#poolForm"));
+  const form = $("#poolForm");
+  resetForm(form);
+  form.elements.namedItem("listen_host").value = "0.0.0.0";
+  form.elements.namedItem("protocol").value = "http";
+  form.elements.namedItem("strategy").value = "round_robin";
+  form.elements.namedItem("failover_enabled").checked = true;
+  form.elements.namedItem("enabled").checked = true;
   state.currentPoolMembers = new Set();
   renderPoolCandidates();
 }
@@ -626,30 +807,77 @@ function toast(message, type = "info") {
   setTimeout(() => el.remove(), 3200);
 }
 
+function setButtonLoading(button, loading) {
+  if (!button) return;
+  if (loading) {
+    if (!button.dataset.originalText) {
+      button.dataset.originalText = button.textContent;
+    }
+    button.disabled = true;
+    button.textContent = button.dataset.loadingText || "处理中...";
+  } else {
+    button.disabled = false;
+    if (button.dataset.originalText) {
+      button.textContent = button.dataset.originalText;
+      delete button.dataset.originalText;
+    }
+  }
+}
+
+function setContainerLoading(selector, text) {
+  const container = $(selector);
+  if (!container) return;
+  container.innerHTML = `<div class="empty-state">${escapeHTML(text)}</div>`;
+}
+
 function statusClass(item) {
   if (!item.enabled) return "disabled";
-  if (item.last_status === "available") return "available";
-  if (item.last_status === "testing") return "testing";
-  if (item.last_status === "unavailable") return "unavailable";
+  const status = normalizeStatus(item);
+  if (status === "available") return "available";
+  if (status === "testing") return "testing";
+  if (status === "unavailable") return "unavailable";
   return "disabled";
 }
 
 function statusText(item) {
   if (!item.enabled) return "已禁用";
-  if (item.last_status === "available") return "可用";
-  if (item.last_status === "testing") return "测试中";
-  if (item.last_status === "unavailable") return "不可用";
+  const status = normalizeStatus(item);
+  if (status === "available") return "可用";
+  if (status === "testing") return "测试中";
+  if (status === "unavailable") return "不可用";
   return "未知";
 }
 
+function syncStatusClass(value) {
+  const status = String(value || "").toLowerCase();
+  if (status.includes("success") || status.includes("ok")) return "available";
+  if (status.includes("error") || status.includes("fail")) return "unavailable";
+  return "disabled";
+}
+
+function normalizeStatus(item) {
+  const raw = String(item.last_status || "").toLowerCase();
+  if (!item.enabled) return "disabled";
+  if (raw === "available" || raw === "ok" || raw === "success") return "available";
+  if (raw === "testing") return "testing";
+  if (raw === "unavailable" || raw === "error" || raw === "failed" || raw === "timeout") return "unavailable";
+  return "unknown";
+}
+
 function latencyLabel(item) {
-  if (item.last_latency_ms === null || item.last_latency_ms === undefined) return "待测试";
+  if (item.last_latency_ms === null || item.last_latency_ms === undefined) {
+    return "待测试";
+  }
   return `${item.last_latency_ms} ms`;
 }
 
 function speedLabel(item) {
-  if (state.settings && state.settings.speed_test_enabled === false) return "未启用";
-  if (item.last_speed_mbps === null || item.last_speed_mbps === undefined) return "待测速";
+  if (state.settings && state.settings.speed_test_enabled === false) {
+    return "未启用";
+  }
+  if (item.last_speed_mbps === null || item.last_speed_mbps === undefined) {
+    return "待测速";
+  }
   return `${Number(item.last_speed_mbps).toFixed(2)} Mbps`;
 }
 
@@ -662,8 +890,8 @@ function formatTime(value) {
 
 function maskUrl(value) {
   if (!value) return "-";
-  if (value.length <= 26) return value;
-  return `${value.slice(0, 12)}...${value.slice(-10)}`;
+  if (value.length <= 30) return value;
+  return `${value.slice(0, 14)}...${value.slice(-10)}`;
 }
 
 function escapeHTML(value) {
@@ -672,6 +900,11 @@ function escapeHTML(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function badgeHTML(text, type = "") {
+  const className = type ? `badge ${type}` : "badge";
+  return `<span class="${className}">${text}</span>`;
 }
 
 function poolConnectAddress(item) {
@@ -685,4 +918,10 @@ function poolConnectionString(item) {
   const username = encodeURIComponent(item.auth_username || "");
   const password = encodeURIComponent(item.auth_password_secret || "");
   return `${item.protocol}://${username}:${password}@${item.listen_host}:${item.listen_port}`;
+}
+
+function bindActionButtons(container, handler) {
+  $$("button[data-action]", container).forEach((button) => {
+    button.addEventListener("click", handler);
+  });
 }

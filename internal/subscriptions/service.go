@@ -21,12 +21,13 @@ import (
 )
 
 type Service struct {
-	store       *db.Store
-	settingsSvc *settings.Service
-	events      *events.Broker
-	client      *http.Client
-	mu          sync.Mutex
-	syncing     map[int64]struct{}
+	store         *db.Store
+	settingsSvc   *settings.Service
+	events        *events.Broker
+	client        *http.Client
+	mu            sync.Mutex
+	syncing       map[int64]struct{}
+	afterSyncHook func(context.Context, int64, []int64)
 }
 
 type UpsertRequest struct {
@@ -60,6 +61,12 @@ func NewService(store *db.Store, settingsSvc *settings.Service, broker *events.B
 		},
 		syncing: make(map[int64]struct{}),
 	}
+}
+
+func (s *Service) SetAfterSyncHook(fn func(context.Context, int64, []int64)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.afterSyncHook = fn
 }
 
 func (s *Service) StartScheduler(ctx context.Context) {
@@ -251,14 +258,21 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 		return SyncOutcome{}, err
 	}
 	now := time.Now().UTC()
+	var createdIDs []int64
 	for _, item := range result.Nodes {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO subscription_nodes (
+		res, err := tx.ExecContext(ctx, `INSERT INTO subscription_nodes (
 			subscription_id, display_name, protocol, server, port, raw_payload, normalized_json, enabled, last_status, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'unknown', ?, ?)`,
 			sub.ID, item.DisplayName, item.Protocol, item.Server, item.Port, item.RawPayload, nodes.NormalizeJSON(item.Normalized), now, now,
-		); err != nil {
+		)
+		if err != nil {
 			return SyncOutcome{}, err
 		}
+		nodeID, err := res.LastInsertId()
+		if err != nil {
+			return SyncOutcome{}, err
+		}
+		createdIDs = append(createdIDs, nodeID)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE subscriptions SET last_sync_at = ?, last_sync_status = ?, last_error = ?, etag = ?, last_modified = ?, updated_at = ?
 		WHERE id = ?`, now, "ok", errorSummary(result.Errors), resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"), now, sub.ID); err != nil {
@@ -273,6 +287,13 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 		Errors:       stringifyErrors(result.Errors),
 	}
 	s.events.Publish("subscriptions.synced", map[string]any{"subscription_id": id, "outcome": outcome})
+	s.mu.Lock()
+	hook := s.afterSyncHook
+	s.mu.Unlock()
+	if hook != nil && len(createdIDs) > 0 {
+		nodeIDs := append([]int64(nil), createdIDs...)
+		go hook(context.Background(), sub.ID, nodeIDs)
+	}
 	return outcome, nil
 }
 

@@ -1,14 +1,25 @@
 {{define "body"}}
 <main class="login-shell">
   <section class="login-card">
-    <h1>Super-Proxy-Pool</h1>
-    <p>输入管理密码进入面板。默认密码为 <code>admin</code>。</p>
+    <div class="login-brand">
+      <div class="brand-title">Super-Proxy-Pool</div>
+      <div class="brand-subtitle">代理面板登录</div>
+    </div>
+    <p class="login-tip">
+      输入管理密码进入面板，默认密码为 <code>admin</code>。
+    </p>
     <form id="loginForm" class="stack-form">
       <label>
         <span>密码</span>
-        <input type="password" name="password" placeholder="请输入密码" required>
+        <input
+          type="password"
+          name="password"
+          placeholder="请输入管理密码"
+          required
+          autocomplete="current-password"
+        >
       </label>
-      <button type="submit">登录</button>
+      <button type="submit" data-loading-text="登录中...">登录</button>
     </form>
   </section>
 </main>

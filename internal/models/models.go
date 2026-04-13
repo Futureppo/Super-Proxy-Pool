@@ -19,6 +19,8 @@ type Settings struct {
 	FailureRetryCount              int       `json:"failure_retry_count"`
 	LogLevel                       string    `json:"log_level"`
 	SpeedMaxBytes                  int64     `json:"speed_max_bytes"`
+	PoolPortMin                    int       `json:"pool_port_min"`
+	PoolPortMax                    int       `json:"pool_port_max"`
 	CreatedAt                      time.Time `json:"created_at"`
 	UpdatedAt                      time.Time `json:"updated_at"`
 }

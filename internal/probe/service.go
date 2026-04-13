@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,14 +27,18 @@ type Service struct {
 	store         *db.Store
 	manualNodes   *nodes.Service
 	subscriptions *subscriptions.Service
+	pools         *pools.Service
 	mihomo        *mihomo.Manager
 	events        *events.Broker
 
 	latencyQueue chan task
 	speedQueue   chan task
 
-	activeLatency int32
-	activeSpeed   int32
+	activeLatency            int32
+	activeSpeed              int32
+	backgroundLatencyRunning int32
+	backgroundSpeedRunning   int32
+	startOnce                sync.Once
 }
 
 type task struct {
@@ -42,12 +47,13 @@ type task struct {
 	TestType     string
 }
 
-func NewService(settingsSvc *settings.Service, store *db.Store, manualNodes *nodes.Service, subscriptions *subscriptions.Service, mihomoMgr *mihomo.Manager, broker *events.Broker) *Service {
+func NewService(settingsSvc *settings.Service, store *db.Store, manualNodes *nodes.Service, subscriptions *subscriptions.Service, poolSvc *pools.Service, mihomoMgr *mihomo.Manager, broker *events.Broker) *Service {
 	return &Service{
 		settingsSvc:   settingsSvc,
 		store:         store,
 		manualNodes:   manualNodes,
 		subscriptions: subscriptions,
+		pools:         poolSvc,
 		mihomo:        mihomoMgr,
 		events:        broker,
 		latencyQueue:  make(chan task, 512),
@@ -56,8 +62,12 @@ func NewService(settingsSvc *settings.Service, store *db.Store, manualNodes *nod
 }
 
 func (s *Service) Start(ctx context.Context) {
-	go s.dispatchLatency(ctx)
-	go s.dispatchSpeed(ctx)
+	s.startOnce.Do(func() {
+		go s.dispatchLatency(ctx)
+		go s.dispatchSpeed(ctx)
+		go s.runBackgroundLatencySweep(ctx)
+		go s.runBackgroundSpeedSweep(ctx)
+	})
 }
 
 func (s *Service) EnqueueLatency(sourceType string, sourceNodeID int64) error {
@@ -128,6 +138,100 @@ func (s *Service) dispatchSpeed(ctx context.Context) {
 	}
 }
 
+func (s *Service) runBackgroundLatencySweep(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	s.enqueuePoolMemberLatencySweep(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.enqueuePoolMemberLatencySweep(ctx)
+		}
+	}
+}
+
+func (s *Service) runBackgroundSpeedSweep(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Minute)
+	defer ticker.Stop()
+	s.enqueueBackgroundSpeedSweep(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.enqueueBackgroundSpeedSweep(ctx)
+		}
+	}
+}
+
+func (s *Service) enqueuePoolMemberLatencySweep(ctx context.Context) {
+	if !atomic.CompareAndSwapInt32(&s.backgroundLatencyRunning, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&s.backgroundLatencyRunning, 0)
+	if s.pools == nil {
+		return
+	}
+	poolList, err := s.pools.List(ctx)
+	if err != nil {
+		return
+	}
+	seen := make(map[string]struct{})
+	for _, pool := range poolList {
+		if !pool.Enabled {
+			continue
+		}
+		members, err := s.pools.GetMembers(ctx, pool.ID)
+		if err != nil {
+			continue
+		}
+		for _, member := range members {
+			if !member.Enabled {
+				continue
+			}
+			key := fmt.Sprintf("%s:%d", member.SourceType, member.SourceNodeID)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			_ = s.EnqueueLatency(member.SourceType, member.SourceNodeID)
+		}
+	}
+}
+
+func (s *Service) enqueueBackgroundSpeedSweep(ctx context.Context) {
+	if !atomic.CompareAndSwapInt32(&s.backgroundSpeedRunning, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&s.backgroundSpeedRunning, 0)
+	settingsRow, err := s.settingsSvc.Get(ctx)
+	if err != nil || !settingsRow.SpeedTestEnabled {
+		return
+	}
+	manualInventory, err := s.manualNodes.AllRuntimeNodes(ctx)
+	if err != nil {
+		return
+	}
+	subInventory, err := s.subscriptions.AllRuntimeNodes(ctx)
+	if err != nil {
+		return
+	}
+	seen := make(map[string]struct{})
+	for _, node := range append(manualInventory, subInventory...) {
+		if !node.Enabled {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d", node.SourceType, node.SourceNodeID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		_ = s.EnqueueSpeed(node.SourceType, node.SourceNodeID)
+	}
+}
+
 func (s *Service) waitForSlot(ctx context.Context, active *int32, limitFn func() int) {
 	for {
 		limit := limitFn()
@@ -166,7 +270,7 @@ func (s *Service) runLatency(ctx context.Context, item task) {
 	if err != nil {
 		return
 	}
-	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret)
+	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret, settingsRow.LogLevel)
 	if err != nil {
 		_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "unavailable", err.Error())
 		return
@@ -191,7 +295,7 @@ func (s *Service) runSpeed(ctx context.Context, item task) {
 	if err != nil {
 		return
 	}
-	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret)
+	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret, settingsRow.LogLevel)
 	if err != nil {
 		_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "unavailable", err.Error())
 		return
@@ -216,7 +320,7 @@ func (s *Service) runSpeed(ctx context.Context, item task) {
 	s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "speed", "success": true, "speed_mbps": speedMbps})
 }
 
-func (s *Service) refreshProbeInventoryAndGetNode(ctx context.Context, sourceType string, sourceNodeID int64, secret string) (models.RuntimeNode, error) {
+func (s *Service) refreshProbeInventoryAndGetNode(ctx context.Context, sourceType string, sourceNodeID int64, secret, logLevel string) (models.RuntimeNode, error) {
 	manualInventory, err := s.manualNodes.AllRuntimeNodes(ctx)
 	if err != nil {
 		return models.RuntimeNode{}, err
@@ -226,7 +330,7 @@ func (s *Service) refreshProbeInventoryAndGetNode(ctx context.Context, sourceTyp
 		return models.RuntimeNode{}, err
 	}
 	inventory := append(manualInventory, subscriptionInventory...)
-	cfg, err := pools.BuildProbeInventoryConfig(secret, s.mihomo.ProbeControllerAddr(), s.mihomo.ProbeMixedPort(), inventory)
+	cfg, err := pools.BuildProbeInventoryConfig(secret, s.mihomo.ProbeControllerAddr(), s.mihomo.ProbeMixedPort(), logLevel, inventory)
 	if err != nil {
 		return models.RuntimeNode{}, err
 	}

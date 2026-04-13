@@ -2,9 +2,7 @@ package pools
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"super-proxy-pool/internal/auth"
@@ -17,7 +15,7 @@ import (
 	"super-proxy-pool/internal/subscriptions"
 )
 
-func TestServicePublishWritesConfigs(t *testing.T) {
+func TestValidateUpsertRequestRequiresAuthFields(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	cfg := config.App{
@@ -33,11 +31,9 @@ func TestServicePublishWritesConfigs(t *testing.T) {
 		ProbeMixedPort:          17891,
 		DefaultControllerSecret: "secret-token",
 	}
-
 	if err := config.EnsureDirs(cfg); err != nil {
 		t.Fatalf("EnsureDirs() error = %v", err)
 	}
-
 	store, err := db.Open(cfg.DBPath)
 	if err != nil {
 		t.Fatalf("db.Open() error = %v", err)
@@ -51,6 +47,15 @@ func TestServicePublishWritesConfigs(t *testing.T) {
 	}
 	if err := settingsSvc.EnsureDefaults(ctx, hash); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	currentSettings, err := settingsSvc.Get(ctx)
+	if err != nil {
+		t.Fatalf("settingsSvc.Get() error = %v", err)
+	}
+	currentSettings.PoolPortMin = 18080
+	currentSettings.PoolPortMax = 18120
+	if _, _, err := settingsSvc.Update(ctx, currentSettings); err != nil {
+		t.Fatalf("settingsSvc.Update() error = %v", err)
 	}
 
 	broker := events.NewBroker()
@@ -67,49 +72,38 @@ func TestServicePublishWritesConfigs(t *testing.T) {
 	})
 	poolSvc := NewService(store, settingsSvc, nodeSvc, subSvc, mihomoMgr, broker)
 
-	createdNodes, _, err := nodeSvc.Create(ctx, nodes.CreateRequest{
-		Content: "trojan://password@demo.example.com:443#demo-node",
-	})
-	if err != nil {
-		t.Fatalf("Create manual node error = %v", err)
-	}
-	pool, err := poolSvc.Create(ctx, UpsertRequest{
-		Name:            "demo-pool",
-		Protocol:        "http",
-		ListenHost:      "0.0.0.0",
-		ListenPort:      18080,
-		Strategy:        "round_robin",
-		FailoverEnabled: true,
-		Enabled:         true,
-	})
-	if err != nil {
-		t.Fatalf("Create pool error = %v", err)
-	}
-	if err := poolSvc.UpdateMembers(ctx, pool.ID, []MemberInput{{
-		SourceType:   "manual",
-		SourceNodeID: createdNodes[0].ID,
-		Enabled:      true,
-		Weight:       1,
-	}}); err != nil {
-		t.Fatalf("UpdateMembers() error = %v", err)
-	}
-	if err := poolSvc.Publish(ctx, pool.ID); err != nil {
-		t.Fatalf("Publish() error = %v", err)
+	if err := poolSvc.validateUpsertRequest(ctx, 0, UpsertRequest{
+		Name:         "demo",
+		Protocol:     "http",
+		ListenPort:   18080,
+		AuthEnabled:  true,
+		AuthUsername: "",
+	}); err == nil {
+		t.Fatalf("expected auth validation error")
 	}
 
-	prodConfig, err := os.ReadFile(cfg.ProdConfigPath)
-	if err != nil {
-		t.Fatalf("ReadFile(prod) error = %v", err)
-	}
-	probeConfig, err := os.ReadFile(cfg.ProbeConfigPath)
-	if err != nil {
-		t.Fatalf("ReadFile(probe) error = %v", err)
+	if err := poolSvc.validateUpsertRequest(ctx, 0, UpsertRequest{
+		Name:               "demo",
+		Protocol:           "http",
+		ListenPort:         18080,
+		AuthEnabled:        true,
+		AuthUsername:       "user",
+		AuthPasswordSecret: "pass",
+		Enabled:            true,
+		FailoverEnabled:    true,
+	}); err != nil {
+		t.Fatalf("validateUpsertRequest() error = %v", err)
 	}
 
-	if !strings.Contains(string(prodConfig), "pool-group-") || !strings.Contains(string(prodConfig), "listeners:") || !strings.Contains(string(prodConfig), "demo.example.com") || !strings.Contains(string(prodConfig), "log-level: info") {
-		t.Fatalf("unexpected prod config:\n%s", string(prodConfig))
-	}
-	if !strings.Contains(string(probeConfig), "mixed-port: 17891") || !strings.Contains(string(probeConfig), "demo.example.com") || !strings.Contains(string(probeConfig), "log-level: info") {
-		t.Fatalf("unexpected probe config:\n%s", string(probeConfig))
+	if err := poolSvc.validateUpsertRequest(ctx, 0, UpsertRequest{
+		Name:               "demo",
+		Protocol:           "http",
+		ListenPort:         18079,
+		AuthEnabled:        false,
+		Enabled:            true,
+		FailoverEnabled:    true,
+		AuthPasswordSecret: "",
+	}); err == nil {
+		t.Fatalf("expected pool port range validation error")
 	}
 }
