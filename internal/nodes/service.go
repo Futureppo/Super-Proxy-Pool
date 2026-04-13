@@ -229,6 +229,12 @@ func (s *Service) UpdateProbeResult(ctx context.Context, sourceNodeID int64, lat
 	return err
 }
 
+func (s *Service) SetTransientStatus(ctx context.Context, sourceNodeID int64, status, errMsg string) error {
+	_, err := s.store.DB.ExecContext(ctx, `UPDATE manual_nodes SET last_status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+		status, errMsg, time.Now().UTC(), sourceNodeID)
+	return err
+}
+
 func scanManualNode(scanner interface{ Scan(dest ...any) error }) (models.ManualNode, error) {
 	var item models.ManualNode
 	var enabled int

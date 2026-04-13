@@ -1,6 +1,7 @@
 data/
 tmp-smoke-data/
 tmp-sync-data/
+tmp-e2e-data*/
 *.exe
 *.db
 *.log

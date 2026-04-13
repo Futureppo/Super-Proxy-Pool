@@ -335,6 +335,12 @@ func (s *Service) UpdateProbeResult(ctx context.Context, sourceNodeID int64, lat
 	return err
 }
 
+func (s *Service) SetTransientStatus(ctx context.Context, sourceNodeID int64, status, errMsg string) error {
+	_, err := s.store.DB.ExecContext(ctx, `UPDATE subscription_nodes SET last_status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+		status, errMsg, time.Now().UTC(), sourceNodeID)
+	return err
+}
+
 func (s *Service) setSyncFailure(ctx context.Context, id int64, message string) error {
 	_, err := s.store.DB.ExecContext(ctx, `UPDATE subscriptions SET last_sync_status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
 		"failed", message, time.Now().UTC(), id)

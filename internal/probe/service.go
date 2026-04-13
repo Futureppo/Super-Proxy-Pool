@@ -2,34 +2,308 @@ package probe
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"sync/atomic"
+	"time"
 
+	"golang.org/x/net/proxy"
+
+	"super-proxy-pool/internal/db"
 	"super-proxy-pool/internal/events"
+	"super-proxy-pool/internal/mihomo"
+	"super-proxy-pool/internal/models"
+	"super-proxy-pool/internal/nodes"
+	"super-proxy-pool/internal/pools"
+	"super-proxy-pool/internal/settings"
+	"super-proxy-pool/internal/subscriptions"
 )
 
 type Service struct {
-	events *events.Broker
+	settingsSvc   *settings.Service
+	store         *db.Store
+	manualNodes   *nodes.Service
+	subscriptions *subscriptions.Service
+	mihomo        *mihomo.Manager
+	events        *events.Broker
+
+	latencyQueue chan task
+	speedQueue   chan task
+
+	activeLatency int32
+	activeSpeed   int32
 }
 
-func NewService(broker *events.Broker) *Service {
-	return &Service{events: broker}
+type task struct {
+	SourceType   string
+	SourceNodeID int64
+	TestType     string
 }
 
-func (s *Service) Start(context.Context) {}
+func NewService(settingsSvc *settings.Service, store *db.Store, manualNodes *nodes.Service, subscriptions *subscriptions.Service, mihomoMgr *mihomo.Manager, broker *events.Broker) *Service {
+	return &Service{
+		settingsSvc:   settingsSvc,
+		store:         store,
+		manualNodes:   manualNodes,
+		subscriptions: subscriptions,
+		mihomo:        mihomoMgr,
+		events:        broker,
+		latencyQueue:  make(chan task, 512),
+		speedQueue:    make(chan task, 128),
+	}
+}
+
+func (s *Service) Start(ctx context.Context) {
+	go s.dispatchLatency(ctx)
+	go s.dispatchSpeed(ctx)
+}
 
 func (s *Service) EnqueueLatency(sourceType string, sourceNodeID int64) error {
-	s.events.Publish("probe.queued", map[string]any{
-		"source_type":    sourceType,
-		"source_node_id": sourceNodeID,
-		"test_type":      "latency",
-	})
-	return nil
+	item := task{SourceType: sourceType, SourceNodeID: sourceNodeID, TestType: "latency"}
+	select {
+	case s.latencyQueue <- item:
+		s.events.Publish("probe.queued", map[string]any{
+			"source_type":    sourceType,
+			"source_node_id": sourceNodeID,
+			"test_type":      "latency",
+		})
+		return nil
+	default:
+		return fmt.Errorf("latency queue is full")
+	}
 }
 
 func (s *Service) EnqueueSpeed(sourceType string, sourceNodeID int64) error {
-	s.events.Publish("probe.queued", map[string]any{
-		"source_type":    sourceType,
-		"source_node_id": sourceNodeID,
-		"test_type":      "speed",
-	})
-	return nil
+	item := task{SourceType: sourceType, SourceNodeID: sourceNodeID, TestType: "speed"}
+	select {
+	case s.speedQueue <- item:
+		s.events.Publish("probe.queued", map[string]any{
+			"source_type":    sourceType,
+			"source_node_id": sourceNodeID,
+			"test_type":      "speed",
+		})
+		return nil
+	default:
+		return fmt.Errorf("speed queue is full")
+	}
+}
+
+func (s *Service) dispatchLatency(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item := <-s.latencyQueue:
+			s.waitForSlot(ctx, &s.activeLatency, func() int { return s.currentLatencyLimit(ctx) })
+			if ctx.Err() != nil {
+				return
+			}
+			atomic.AddInt32(&s.activeLatency, 1)
+			go func(it task) {
+				defer atomic.AddInt32(&s.activeLatency, -1)
+				s.runLatency(ctx, it)
+			}(item)
+		}
+	}
+}
+
+func (s *Service) dispatchSpeed(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item := <-s.speedQueue:
+			s.waitForSlot(ctx, &s.activeSpeed, func() int { return s.currentSpeedLimit(ctx) })
+			if ctx.Err() != nil {
+				return
+			}
+			atomic.AddInt32(&s.activeSpeed, 1)
+			go func(it task) {
+				defer atomic.AddInt32(&s.activeSpeed, -1)
+				s.runSpeed(ctx, it)
+			}(item)
+		}
+	}
+}
+
+func (s *Service) waitForSlot(ctx context.Context, active *int32, limitFn func() int) {
+	for {
+		limit := limitFn()
+		if limit < 1 {
+			limit = 1
+		}
+		if int(atomic.LoadInt32(active)) < limit {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (s *Service) currentLatencyLimit(ctx context.Context) int {
+	current, err := s.settingsSvc.Get(ctx)
+	if err != nil {
+		return 1
+	}
+	return current.LatencyConcurrency
+}
+
+func (s *Service) currentSpeedLimit(ctx context.Context) int {
+	current, err := s.settingsSvc.Get(ctx)
+	if err != nil {
+		return 1
+	}
+	return current.SpeedConcurrency
+}
+
+func (s *Service) runLatency(ctx context.Context, item task) {
+	settingsRow, err := s.settingsSvc.Get(ctx)
+	if err != nil {
+		return
+	}
+	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret)
+	if err != nil {
+		_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "unavailable", err.Error())
+		return
+	}
+	_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "testing", "")
+
+	taskCtx, cancel := context.WithTimeout(ctx, time.Duration(settingsRow.LatencyTimeoutMS+3000)*time.Millisecond)
+	defer cancel()
+
+	delay, err := s.mihomo.Delay(taskCtx, settingsRow.MihomoControllerSecret, runtimeNodeName(node), settingsRow.LatencyTestURL, settingsRow.LatencyTimeoutMS)
+	if err != nil {
+		_ = s.updateResult(ctx, item, nil, nil, "unavailable", err.Error(), false)
+		s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "latency", "success": false, "error": err.Error()})
+		return
+	}
+	_ = s.updateResult(ctx, item, &delay, nil, "available", "", false)
+	s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "latency", "success": true, "latency_ms": delay})
+}
+
+func (s *Service) runSpeed(ctx context.Context, item task) {
+	settingsRow, err := s.settingsSvc.Get(ctx)
+	if err != nil {
+		return
+	}
+	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret)
+	if err != nil {
+		_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "unavailable", err.Error())
+		return
+	}
+	_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "testing", "")
+
+	taskCtx, cancel := context.WithTimeout(ctx, time.Duration(settingsRow.SpeedTimeoutMS+3000)*time.Millisecond)
+	defer cancel()
+
+	if err := s.mihomo.SetGlobalProxy(taskCtx, settingsRow.MihomoControllerSecret, runtimeNodeName(node)); err != nil {
+		_ = s.updateResult(ctx, item, nil, nil, "unavailable", err.Error(), true)
+		s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "speed", "success": false, "error": err.Error()})
+		return
+	}
+	speedMbps, err := s.measureDownloadSpeed(taskCtx, settingsRow.SpeedTestURL, settingsRow.SpeedMaxBytes)
+	if err != nil {
+		_ = s.updateResult(ctx, item, nil, nil, "unavailable", err.Error(), true)
+		s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "speed", "success": false, "error": err.Error()})
+		return
+	}
+	_ = s.updateResult(ctx, item, nil, &speedMbps, "available", "", true)
+	s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "speed", "success": true, "speed_mbps": speedMbps})
+}
+
+func (s *Service) refreshProbeInventoryAndGetNode(ctx context.Context, sourceType string, sourceNodeID int64, secret string) (models.RuntimeNode, error) {
+	manualInventory, err := s.manualNodes.AllRuntimeNodes(ctx)
+	if err != nil {
+		return models.RuntimeNode{}, err
+	}
+	subscriptionInventory, err := s.subscriptions.AllRuntimeNodes(ctx)
+	if err != nil {
+		return models.RuntimeNode{}, err
+	}
+	inventory := append(manualInventory, subscriptionInventory...)
+	cfg, err := pools.BuildProbeInventoryConfig(secret, s.mihomo.ProbeControllerAddr(), s.mihomo.ProbeMixedPort(), inventory)
+	if err != nil {
+		return models.RuntimeNode{}, err
+	}
+	if err := s.mihomo.ApplyProbeConfig(cfg); err != nil {
+		return models.RuntimeNode{}, err
+	}
+	if sourceType == "manual" {
+		return s.manualNodes.NodeBySource(ctx, sourceNodeID)
+	}
+	return s.subscriptions.NodeBySource(ctx, sourceNodeID)
+}
+
+func (s *Service) measureDownloadSpeed(ctx context.Context, targetURL string, maxBytes int64) (float64, error) {
+	dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", s.mihomo.ProbeMixedPort()), nil, proxy.Direct)
+	if err != nil {
+		return 0, err
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		},
+	}
+	client := &http.Client{
+		Timeout:   0,
+		Transport: transport,
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	readBytes, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxBytes))
+	if err != nil {
+		return 0, err
+	}
+	elapsed := time.Since(start).Seconds()
+	if elapsed <= 0 {
+		return 0, fmt.Errorf("invalid speed timing")
+	}
+	return float64(readBytes*8) / elapsed / 1_000_000, nil
+}
+
+func (s *Service) updateResult(ctx context.Context, item task, latency *int64, speed *float64, status, errMsg string, isSpeed bool) error {
+	if item.SourceType == "manual" {
+		if err := s.manualNodes.UpdateProbeResult(ctx, item.SourceNodeID, latency, speed, status, errMsg, isSpeed); err != nil {
+			return err
+		}
+	} else {
+		if err := s.subscriptions.UpdateProbeResult(ctx, item.SourceNodeID, latency, speed, status, errMsg, isSpeed); err != nil {
+			return err
+		}
+	}
+	return s.store.ExecContext(ctx, `INSERT INTO probe_history (source_type, source_node_id, test_type, success, latency_ms, speed_mbps, error_message, tested_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.SourceType, item.SourceNodeID, item.TestType, boolToInt(errMsg == ""), latency, speed, errMsg, time.Now().UTC(),
+	)
+}
+
+func (s *Service) setStatus(ctx context.Context, sourceType string, sourceNodeID int64, status, errMsg string) error {
+	if sourceType == "manual" {
+		return s.manualNodes.SetTransientStatus(ctx, sourceNodeID, status, errMsg)
+	}
+	return s.subscriptions.SetTransientStatus(ctx, sourceNodeID, status, errMsg)
+}
+
+func runtimeNodeName(node models.RuntimeNode) string {
+	return pools.RuntimeNodeName(node)
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

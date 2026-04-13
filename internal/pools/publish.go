@@ -31,6 +31,14 @@ func BuildPublishBundle(secret, prodController, probeController string, probeMix
 	}, nil
 }
 
+func BuildProbeInventoryConfig(secret, probeController string, probeMixedPort int, inventory []models.RuntimeNode) ([]byte, error) {
+	return buildProbeConfig(secret, probeController, probeMixedPort, inventory)
+}
+
+func RuntimeNodeName(node models.RuntimeNode) string {
+	return runtimeNodeName(node)
+}
+
 func buildProdConfig(secret, controller, testURL string, poolList []models.ProxyPool, members map[int64][]models.RuntimeNode) ([]byte, error) {
 	type listener struct {
 		Name   string              `yaml:"name"`

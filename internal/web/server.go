@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"html/template"
 	"io/fs"
@@ -337,6 +338,7 @@ func (a *App) handleSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: map[string]bool{"deleted": true}})
 }
 
@@ -346,6 +348,7 @@ func (a *App) handleSubscriptionSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
 }
 
@@ -380,6 +383,7 @@ func (a *App) handleSubscriptionNodeToggle(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
 }
 
@@ -409,6 +413,7 @@ func (a *App) handleManualNodeCreate(w http.ResponseWriter, r *http.Request) {
 			"parse_errors": stringifyErrors(parseErrs),
 		},
 	})
+	a.publishRuntimeAsync()
 }
 
 func (a *App) handleManualNodeGet(w http.ResponseWriter, r *http.Request) {
@@ -430,6 +435,7 @@ func (a *App) handleManualNodeUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
 }
 
@@ -438,6 +444,7 @@ func (a *App) handleManualNodeDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: map[string]bool{"deleted": true}})
 }
 
@@ -463,6 +470,7 @@ func (a *App) handleManualNodeToggle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
 }
 
@@ -494,6 +502,7 @@ func (a *App) handlePoolCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusCreated, apiResponse{Success: true, Data: item})
 }
 
@@ -516,6 +525,7 @@ func (a *App) handlePoolUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
 }
 
@@ -524,6 +534,7 @@ func (a *App) handlePoolDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: map[string]bool{"deleted": true}})
 }
 
@@ -533,6 +544,7 @@ func (a *App) handlePoolToggle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
 }
 
@@ -572,6 +584,7 @@ func (a *App) handlePoolMembersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	a.publishRuntimeAsync()
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: map[string]bool{"updated": true}})
 }
 
@@ -597,11 +610,21 @@ func (a *App) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	message := "already applied"
 	if restartRequired {
 		message = "saved; restart required"
+	} else {
+		a.publishRuntimeAsync()
 	}
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
 		"settings":      updated,
 		"apply_message": message,
 	}})
+}
+
+func (a *App) publishRuntimeAsync() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = a.pools.Publish(ctx, 0)
+	}()
 }
 
 func (a *App) handleRestart(w http.ResponseWriter, r *http.Request) {

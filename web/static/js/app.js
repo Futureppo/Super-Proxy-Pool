@@ -415,7 +415,14 @@ function renderPools() {
         <span>认证: ${item.auth_enabled ? "开启" : "关闭"}</span>
         <span>发布时间: ${formatTime(item.last_published_at)}</span>
       </div>
+      <div class="entity-meta muted">
+        <span>连接: <code>${escapeHTML(poolConnectAddress(item))}</code></span>
+        ${item.auth_enabled ? `<span>用户名: <code>${escapeHTML(item.auth_username || "-")}</code></span>` : ""}
+        ${item.auth_enabled ? `<span>密码: <code data-role="pool-password" data-secret="${escapeHTML(item.auth_password_secret || "")}">******</code></span>` : ""}
+      </div>
       <div class="entity-actions">
+        ${item.auth_enabled ? `<button class="secondary" data-action="toggle-secret" data-id="${item.id}">显示密码</button>` : ""}
+        <button class="secondary" data-action="copy" data-id="${item.id}">复制连接信息</button>
         <button class="secondary" data-action="edit" data-id="${item.id}">编辑</button>
         <button class="secondary" data-action="toggle" data-id="${item.id}">${item.enabled ? "禁用" : "启用"}</button>
         <button data-action="publish" data-id="${item.id}">刷新发布</button>
@@ -432,6 +439,20 @@ async function onPoolAction(event) {
   const item = state.pools.find((entry) => String(entry.id) === String(id));
   if (!item) return;
   try {
+    if (action === "toggle-secret") {
+      const secretNode = event.currentTarget.closest(".entity-card").querySelector("[data-role=pool-password]");
+      if (secretNode) {
+        const revealed = secretNode.textContent !== "******";
+        secretNode.textContent = revealed ? "******" : secretNode.dataset.secret || "";
+        event.currentTarget.textContent = revealed ? "显示密码" : "隐藏密码";
+      }
+      return;
+    }
+    if (action === "copy") {
+      await navigator.clipboard.writeText(poolConnectionString(item));
+      toast("连接信息已复制", "success");
+      return;
+    }
     if (action === "edit") {
       fillForm($("#poolForm"), item);
       $("#poolForm").elements.namedItem("auth_enabled").checked = item.auth_enabled;
@@ -651,4 +672,17 @@ function escapeHTML(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function poolConnectAddress(item) {
+  return `${item.protocol}://${item.listen_host}:${item.listen_port}`;
+}
+
+function poolConnectionString(item) {
+  if (!item.auth_enabled) {
+    return poolConnectAddress(item);
+  }
+  const username = encodeURIComponent(item.auth_username || "");
+  const password = encodeURIComponent(item.auth_password_secret || "");
+  return `${item.protocol}://${username}:${password}@${item.listen_host}:${item.listen_port}`;
 }
