@@ -366,7 +366,7 @@
 
         <div class="danger-zone">
           <h3>危险操作</h3>
-          <p>重启系统会先保存当前配置，然后退出主进程，由 Docker restart policy 拉起容器。</p>
+          <p>重启系统会先保存当前配置，然后退出主进程。若容器配置了 Docker restart policy，会自动拉起；若没有配置，则需要手动重新启动服务。</p>
           <button id="restartButton" class="danger" type="button" data-loading-text="重启中...">重启系统</button>
         </div>
       </article>

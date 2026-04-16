@@ -944,7 +944,7 @@ async function restartSystem() {
   setButtonLoading(button, true);
   try {
     await api("/api/system/restart", { method: "POST" });
-    toast("系统即将退出，Docker restart policy 会负责拉起", "info");
+    toast("系统即将退出；若已配置 Docker restart policy 会自动拉起，否则需要手动启动服务", "info");
   } catch (error) {
     toast(error.message, "error");
     setButtonLoading(button, false);
