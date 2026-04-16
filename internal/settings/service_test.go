@@ -23,8 +23,6 @@ func TestValidateSettings(t *testing.T) {
 		FailureRetryCount:              2,
 		LogLevel:                       "info",
 		SpeedMaxBytes:                  5000000,
-		PoolPortMin:                    18080,
-		PoolPortMax:                    18120,
 		CreatedAt:                      time.Now(),
 		UpdatedAt:                      time.Now(),
 	}
@@ -42,12 +40,5 @@ func TestValidateSettings(t *testing.T) {
 	invalid.LogLevel = "verbose"
 	if err := validateSettings(invalid); err == nil {
 		t.Fatalf("expected log level validation error")
-	}
-
-	invalid = valid
-	invalid.PoolPortMin = 18121
-	invalid.PoolPortMax = 18120
-	if err := validateSettings(invalid); err == nil {
-		t.Fatalf("expected pool port range validation error")
 	}
 }

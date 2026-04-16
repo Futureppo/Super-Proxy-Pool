@@ -136,31 +136,12 @@
             <input name="name" required autocomplete="off">
           </label>
           <label>
-            <span>协议</span>
-            <select name="protocol">
-              <option value="http">HTTP</option>
-              <option value="socks">SOCKS</option>
-            </select>
-          </label>
-          <label>
-            <span>监听地址</span>
-            <input name="listen_host" value="0.0.0.0" autocomplete="off">
-          </label>
-          <label>
-            <span>监听端口</span>
-            <input type="number" name="listen_port" min="1" max="65535" required>
-          </label>
-          <label class="inline">
-            <input type="checkbox" name="auth_enabled">
-            <span>启用认证</span>
-          </label>
-          <label>
-            <span>用户名</span>
-            <input name="auth_username" autocomplete="off" placeholder="启用认证后必填">
+            <span>用户名（唯一标识此代理池）</span>
+            <input name="auth_username" required autocomplete="off" placeholder="用于区分不同代理池">
           </label>
           <label>
             <span>密码</span>
-            <input name="auth_password_secret" type="password" autocomplete="new-password" placeholder="启用认证后必填">
+            <input name="auth_password_secret" type="password" required autocomplete="new-password">
           </label>
           <label>
             <span>调度策略</span>
@@ -293,14 +274,7 @@
               <option value="error">error</option>
             </select>
           </label>
-          <label>
-            <span>代理池端口范围最小值</span>
-            <input type="number" name="pool_port_min" min="0" max="65535" placeholder="0 表示不限制">
-          </label>
-          <label>
-            <span>代理池端口范围最大值</span>
-            <input type="number" name="pool_port_max" min="0" max="65535" placeholder="0 表示不限制">
-          </label>
+
           <div class="form-actions">
             <button type="submit" data-loading-text="保存中...">保存设置</button>
           </div>

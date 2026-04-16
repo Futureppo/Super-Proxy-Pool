@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"super-proxy-pool/internal/nodes"
 	"super-proxy-pool/internal/pools"
 	"super-proxy-pool/internal/probe"
+	"super-proxy-pool/internal/proxy"
 	"super-proxy-pool/internal/settings"
 	"super-proxy-pool/internal/subscriptions"
 	"super-proxy-pool/internal/web"
@@ -93,16 +93,16 @@ func main() {
 		log.Fatalf("build router: %v", err)
 	}
 
-	server := &http.Server{
-		Addr:              currentSettings.PanelHost + ":" + strconv.Itoa(currentSettings.PanelPort),
-		Handler:           router,
-		ReadHeaderTimeout: 10 * time.Second,
+	listenAddr := currentSettings.PanelHost + ":" + strconv.Itoa(currentSettings.PanelPort)
+	mux, err := proxy.NewMux(poolSvc, router, listenAddr)
+	if err != nil {
+		log.Fatalf("create proxy mux: %v", err)
 	}
 
 	go func() {
-		log.Printf("super-proxy-pool listening on %s", server.Addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server error: %v", err)
+		log.Printf("super-proxy-pool listening on %s (panel + proxy)", listenAddr)
+		if err := mux.Serve(); err != nil {
+			log.Fatalf("proxy mux error: %v", err)
 		}
 	}()
 
@@ -116,7 +116,7 @@ func main() {
 	<-rootCtx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := mux.Shutdown(shutdownCtx); err != nil {
 		log.Printf("server shutdown error: %v", err)
 	}
 	mihomoMgr.Stop()

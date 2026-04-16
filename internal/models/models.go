@@ -19,8 +19,6 @@ type Settings struct {
 	FailureRetryCount              int       `json:"failure_retry_count"`
 	LogLevel                       string    `json:"log_level"`
 	SpeedMaxBytes                  int64     `json:"speed_max_bytes"`
-	PoolPortMin                    int       `json:"pool_port_min"`
-	PoolPortMax                    int       `json:"pool_port_max"`
 	CreatedAt                      time.Time `json:"created_at"`
 	UpdatedAt                      time.Time `json:"updated_at"`
 }
@@ -83,10 +81,6 @@ type ManualNode struct {
 type ProxyPool struct {
 	ID                  int64      `json:"id"`
 	Name                string     `json:"name"`
-	Protocol            string     `json:"protocol"`
-	ListenHost          string     `json:"listen_host"`
-	ListenPort          int        `json:"listen_port"`
-	AuthEnabled         bool       `json:"auth_enabled"`
 	AuthUsername        string     `json:"auth_username"`
 	AuthPasswordSecret  string     `json:"auth_password_secret,omitempty"`
 	Strategy            string     `json:"strategy"`
