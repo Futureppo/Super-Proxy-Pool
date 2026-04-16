@@ -50,4 +50,10 @@ func TestValidateSettings(t *testing.T) {
 	if err := validateSettings(invalid); err == nil {
 		t.Fatalf("expected pool port range validation error")
 	}
+
+	invalid = valid
+	invalid.SpeedConcurrency = 5
+	if err := validateSettings(invalid); err == nil {
+		t.Fatalf("expected speed concurrency upper-bound validation error")
+	}
 }

@@ -56,7 +56,13 @@ func TestBuildPublishBundle(t *testing.T) {
 	if !strings.Contains(prod, "username: user") || !strings.Contains(prod, "password: pass") {
 		t.Fatalf("expected listener auth in prod config:\n%s", prod)
 	}
-	if !strings.Contains(probe, "mixed-port: 17891") || !strings.Contains(probe, "GLOBAL") || !strings.Contains(probe, "manual-10-node-a") || !strings.Contains(probe, "log-level: debug") {
+	if !strings.Contains(probe, "mixed-port: 17891") ||
+		!strings.Contains(probe, "GLOBAL") ||
+		!strings.Contains(probe, "manual-10-node-a") ||
+		!strings.Contains(probe, "SPEED_SLOT_1") ||
+		!strings.Contains(probe, "speed-slot-1") ||
+		!strings.Contains(probe, "port: 17892") ||
+		!strings.Contains(probe, "log-level: debug") {
 		t.Fatalf("unexpected probe config:\n%s", probe)
 	}
 }

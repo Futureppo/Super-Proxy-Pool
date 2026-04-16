@@ -109,7 +109,12 @@ func TestServicePublishWritesConfigs(t *testing.T) {
 	if !strings.Contains(string(prodConfig), "pool-group-") || !strings.Contains(string(prodConfig), "listeners:") || !strings.Contains(string(prodConfig), "demo.example.com") || !strings.Contains(string(prodConfig), "log-level: info") {
 		t.Fatalf("unexpected prod config:\n%s", string(prodConfig))
 	}
-	if !strings.Contains(string(probeConfig), "mixed-port: 17891") || !strings.Contains(string(probeConfig), "demo.example.com") || !strings.Contains(string(probeConfig), "log-level: info") {
+	if !strings.Contains(string(probeConfig), "mixed-port: 17891") ||
+		!strings.Contains(string(probeConfig), "demo.example.com") ||
+		!strings.Contains(string(probeConfig), "SPEED_SLOT_1") ||
+		!strings.Contains(string(probeConfig), "speed-slot-1") ||
+		!strings.Contains(string(probeConfig), "port: 17892") ||
+		!strings.Contains(string(probeConfig), "log-level: info") {
 		t.Fatalf("unexpected probe config:\n%s", string(probeConfig))
 	}
 }

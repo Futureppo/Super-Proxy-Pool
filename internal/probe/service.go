@@ -33,6 +33,7 @@ type Service struct {
 
 	latencyQueue chan task
 	speedQueue   chan task
+	speedSlots   chan int
 
 	activeLatency            int32
 	activeSpeed              int32
@@ -48,6 +49,10 @@ type task struct {
 }
 
 func NewService(settingsSvc *settings.Service, store *db.Store, manualNodes *nodes.Service, subscriptions *subscriptions.Service, poolSvc *pools.Service, mihomoMgr *mihomo.Manager, broker *events.Broker) *Service {
+	speedSlots := make(chan int, pools.MaxProbeSpeedSlots)
+	for slotIndex := 0; slotIndex < pools.MaxProbeSpeedSlots; slotIndex++ {
+		speedSlots <- slotIndex
+	}
 	return &Service{
 		settingsSvc:   settingsSvc,
 		store:         store,
@@ -58,6 +63,7 @@ func NewService(settingsSvc *settings.Service, store *db.Store, manualNodes *nod
 		events:        broker,
 		latencyQueue:  make(chan task, 512),
 		speedQueue:    make(chan task, 128),
+		speedSlots:    speedSlots,
 	}
 }
 
@@ -262,6 +268,9 @@ func (s *Service) currentSpeedLimit(ctx context.Context) int {
 	if err != nil {
 		return 1
 	}
+	if current.SpeedConcurrency > pools.MaxProbeSpeedSlots {
+		return pools.MaxProbeSpeedSlots
+	}
 	return current.SpeedConcurrency
 }
 
@@ -295,6 +304,12 @@ func (s *Service) runSpeed(ctx context.Context, item task) {
 	if err != nil {
 		return
 	}
+	slotIndex, err := s.acquireSpeedSlot(ctx)
+	if err != nil {
+		_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "unavailable", err.Error())
+		return
+	}
+	defer s.releaseSpeedSlot(slotIndex)
 	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret, settingsRow.LogLevel)
 	if err != nil {
 		_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "unavailable", err.Error())
@@ -305,12 +320,12 @@ func (s *Service) runSpeed(ctx context.Context, item task) {
 	taskCtx, cancel := context.WithTimeout(ctx, time.Duration(settingsRow.SpeedTimeoutMS+3000)*time.Millisecond)
 	defer cancel()
 
-	if err := s.mihomo.SetGlobalProxy(taskCtx, settingsRow.MihomoControllerSecret, runtimeNodeName(node)); err != nil {
+	if err := s.mihomo.SetProxySelection(taskCtx, settingsRow.MihomoControllerSecret, pools.ProbeSpeedSlotGroupName(slotIndex), runtimeNodeName(node)); err != nil {
 		_ = s.updateResult(ctx, item, nil, nil, "unavailable", err.Error(), true)
 		s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "speed", "success": false, "error": err.Error()})
 		return
 	}
-	speedMbps, err := s.measureDownloadSpeed(taskCtx, settingsRow.SpeedTestURL, settingsRow.SpeedMaxBytes)
+	speedMbps, err := s.measureDownloadSpeed(taskCtx, slotIndex, settingsRow.SpeedTestURL, settingsRow.SpeedMaxBytes)
 	if err != nil {
 		_ = s.updateResult(ctx, item, nil, nil, "unavailable", err.Error(), true)
 		s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "speed", "success": false, "error": err.Error()})
@@ -343,8 +358,8 @@ func (s *Service) refreshProbeInventoryAndGetNode(ctx context.Context, sourceTyp
 	return s.subscriptions.NodeBySource(ctx, sourceNodeID)
 }
 
-func (s *Service) measureDownloadSpeed(ctx context.Context, targetURL string, maxBytes int64) (float64, error) {
-	dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", s.mihomo.ProbeMixedPort()), nil, proxy.Direct)
+func (s *Service) measureDownloadSpeed(ctx context.Context, slotIndex int, targetURL string, maxBytes int64) (float64, error) {
+	dialer, err := proxy.SOCKS5("tcp", fmt.Sprintf("127.0.0.1:%d", pools.ProbeSpeedSlotPort(s.mihomo.ProbeMixedPort(), slotIndex)), nil, proxy.Direct)
 	if err != nil {
 		return 0, err
 	}
@@ -403,6 +418,22 @@ func (s *Service) setStatus(ctx context.Context, sourceType string, sourceNodeID
 
 func runtimeNodeName(node models.RuntimeNode) string {
 	return pools.RuntimeNodeName(node)
+}
+
+func (s *Service) acquireSpeedSlot(ctx context.Context) (int, error) {
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case slotIndex := <-s.speedSlots:
+		return slotIndex, nil
+	}
+}
+
+func (s *Service) releaseSpeedSlot(slotIndex int) {
+	select {
+	case s.speedSlots <- slotIndex:
+	default:
+	}
 }
 
 func boolToInt(v bool) int {

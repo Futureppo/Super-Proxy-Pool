@@ -154,6 +154,9 @@ func validateSettings(item models.Settings) error {
 	if item.SpeedConcurrency <= 0 {
 		return errors.New("speed_concurrency must be greater than zero")
 	}
+	if item.SpeedConcurrency > 4 {
+		return errors.New("speed_concurrency must be less than or equal to 4")
+	}
 	if item.DefaultSubscriptionIntervalSec <= 0 {
 		return errors.New("default_subscription_interval_sec must be greater than zero")
 	}

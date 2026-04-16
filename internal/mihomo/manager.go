@@ -224,6 +224,10 @@ func (m *Manager) Delay(ctx context.Context, secret, proxyName, targetURL string
 }
 
 func (m *Manager) SetGlobalProxy(ctx context.Context, secret, proxyName string) error {
+	return m.SetProxySelection(ctx, secret, "GLOBAL", proxyName)
+}
+
+func (m *Manager) SetProxySelection(ctx context.Context, secret, groupName, proxyName string) error {
 	if !m.hasBinary {
 		return errors.New("mihomo binary not available")
 	}
@@ -231,7 +235,7 @@ func (m *Manager) SetGlobalProxy(ctx context.Context, secret, proxyName string) 
 		return err
 	}
 	body, _ := json.Marshal(map[string]string{"name": proxyName})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, fmt.Sprintf("http://%s/proxies/GLOBAL", m.opts.ProbeControllerAddr), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, fmt.Sprintf("http://%s/proxies/%s", m.opts.ProbeControllerAddr, url.PathEscape(groupName)), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -246,7 +250,7 @@ func (m *Manager) SetGlobalProxy(ctx context.Context, secret, proxyName string) 
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("set global proxy failed: %s", strings.TrimSpace(string(body)))
+		return fmt.Errorf("set proxy selection failed: %s", strings.TrimSpace(string(body)))
 	}
 	return nil
 }

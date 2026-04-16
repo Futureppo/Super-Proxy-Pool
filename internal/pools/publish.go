@@ -16,6 +16,8 @@ type PublishBundle struct {
 	ProbeConfig []byte
 }
 
+const MaxProbeSpeedSlots = 4
+
 func BuildPublishBundle(secret, prodController, probeController string, probeMixedPort int, testURL, logLevel string, poolList []models.ProxyPool, members map[int64][]models.RuntimeNode, inventory []models.RuntimeNode) (PublishBundle, error) {
 	prodConfig, err := buildProdConfig(secret, prodController, testURL, logLevel, poolList, members)
 	if err != nil {
@@ -37,6 +39,14 @@ func BuildProbeInventoryConfig(secret, probeController string, probeMixedPort in
 
 func RuntimeNodeName(node models.RuntimeNode) string {
 	return runtimeNodeName(node)
+}
+
+func ProbeSpeedSlotGroupName(slotIndex int) string {
+	return probeSpeedSlotGroupName(slotIndex)
+}
+
+func ProbeSpeedSlotPort(probeMixedPort, slotIndex int) int {
+	return probeSpeedSlotPort(probeMixedPort, slotIndex)
 }
 
 func buildProdConfig(secret, controller, testURL, logLevel string, poolList []models.ProxyPool, members map[int64][]models.RuntimeNode) ([]byte, error) {
@@ -120,6 +130,15 @@ func buildProdConfig(secret, controller, testURL, logLevel string, poolList []mo
 }
 
 func buildProbeConfig(secret, controller string, probeMixedPort int, logLevel string, inventory []models.RuntimeNode) ([]byte, error) {
+	type listener struct {
+		Name   string `yaml:"name"`
+		Type   string `yaml:"type"`
+		Listen string `yaml:"listen"`
+		Port   int    `yaml:"port"`
+		Proxy  string `yaml:"proxy"`
+		UDP    bool   `yaml:"udp,omitempty"`
+	}
+
 	root := map[string]any{
 		"mode":                "global",
 		"log-level":           normalizeLogLevel(logLevel),
@@ -129,6 +148,7 @@ func buildProbeConfig(secret, controller string, probeMixedPort int, logLevel st
 		"secret":              secret,
 		"proxies":             []map[string]any{},
 		"proxy-groups":        []map[string]any{},
+		"listeners":           []listener{},
 		"rules":               []string{"MATCH,GLOBAL"},
 	}
 
@@ -150,6 +170,21 @@ func buildProbeConfig(secret, controller string, probeMixedPort int, logLevel st
 			"type":    "select",
 			"proxies": append(names, "DIRECT"),
 		},
+	}
+	for slotIndex := 0; slotIndex < MaxProbeSpeedSlots; slotIndex++ {
+		root["proxy-groups"] = append(root["proxy-groups"].([]map[string]any), map[string]any{
+			"name":    probeSpeedSlotGroupName(slotIndex),
+			"type":    "select",
+			"proxies": append(names, "DIRECT"),
+		})
+		root["listeners"] = append(root["listeners"].([]listener), listener{
+			Name:   fmt.Sprintf("speed-slot-%d", slotIndex+1),
+			Type:   "socks",
+			Listen: "127.0.0.1",
+			Port:   probeSpeedSlotPort(probeMixedPort, slotIndex),
+			Proxy:  probeSpeedSlotGroupName(slotIndex),
+			UDP:    false,
+		})
 	}
 	return yaml.Marshal(root)
 }
@@ -189,6 +224,14 @@ func runtimeNodeName(node models.RuntimeNode) string {
 
 func poolGroupName(poolID int64) string {
 	return fmt.Sprintf("pool-group-%d", poolID)
+}
+
+func probeSpeedSlotGroupName(slotIndex int) string {
+	return fmt.Sprintf("SPEED_SLOT_%d", slotIndex+1)
+}
+
+func probeSpeedSlotPort(probeMixedPort, slotIndex int) int {
+	return probeMixedPort + slotIndex + 1
 }
 
 func normalizeLogLevel(level string) string {
