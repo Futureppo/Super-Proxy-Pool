@@ -59,6 +59,7 @@
         <div class="toolbar">
           <input id="subscriptionSearch" type="search" placeholder="搜索订阅名称或链接">
         </div>
+        <div id="subscriptionSyncFeedback" class="feedback-panel" hidden></div>
         <div id="subscriptionList" class="card-list"></div>
       </article>
     </section>
@@ -70,6 +71,7 @@
         <a class="secondary-link" href="/subscriptions">返回订阅列表</a>
         <button id="subscriptionSyncSingleButton" type="button" data-loading-text="同步中...">立即同步</button>
       </div>
+      <div id="subscriptionSyncFeedback" class="feedback-panel" hidden></div>
       <div id="subscriptionDetailMeta" class="meta-strip" aria-live="polite"></div>
       <div class="toolbar">
         <input id="subscriptionNodeSearch" type="search" placeholder="搜索节点名称、地址或协议">
@@ -93,6 +95,7 @@
               placeholder="支持单条 URI、多条 URI、Mihomo/Clash YAML 片段"
             ></textarea>
           </label>
+          <div id="manualNodeImportFeedback" class="feedback-panel" hidden></div>
           <div class="form-actions">
             <button type="submit" data-loading-text="保存中...">保存节点</button>
             <button type="button" class="secondary" id="manualNodeFormReset">清空</button>

@@ -120,9 +120,9 @@ async function initSubscriptionDetailPage() {
     const button = event.currentTarget;
     setButtonLoading(button, true);
     try {
-      await api(`/api/subscriptions/${subscriptionId}/sync`, { method: "POST" });
-      toast("订阅同步任务已触发", "success");
+      const outcome = await api(`/api/subscriptions/${subscriptionId}/sync`, { method: "POST" });
       await loadSubscriptionDetail();
+      presentSubscriptionSyncResult(outcome);
       setButtonLoading(button, false);
     } catch (error) {
       toast(error.message, "error");
@@ -134,7 +134,10 @@ async function initSubscriptionDetailPage() {
 
 async function initManualNodesPage() {
   const form = $("#manualNodeForm");
-  $("#manualNodeFormReset").addEventListener("click", () => resetForm(form));
+  $("#manualNodeFormReset").addEventListener("click", () => {
+    resetForm(form);
+    clearFeedback("#manualNodeImportFeedback");
+  });
   $("#manualNodeSearch").addEventListener("input", renderManualNodes);
   $("#manualNodeStatusFilter").addEventListener("change", renderManualNodes);
   $("#manualNodeProtocolFilter").addEventListener("change", renderManualNodes);
@@ -190,6 +193,15 @@ async function loadSubscriptionDetail() {
     badgeHTML(detail.last_sync_status || "未同步", syncStatusClass(detail.last_sync_status)),
     badgeHTML(detail.last_sync_at ? `最近同步：${formatTime(detail.last_sync_at)}` : "从未同步"),
   ].join("");
+  if (detail.last_error) {
+    setFeedback("#subscriptionSyncFeedback", {
+      tone: detail.last_sync_status === "failed" ? "error" : "info",
+      title: detail.last_sync_status === "failed" ? "最近同步失败" : "最近同步提示",
+      message: detail.last_error,
+    });
+  } else {
+    clearFeedback("#subscriptionSyncFeedback");
+  }
   renderSubscriptionNodes();
 }
 
@@ -312,8 +324,8 @@ async function onSubscriptionAction(event) {
     setButtonLoading(button, true);
 
     if (action === "sync") {
-      await api(`/api/subscriptions/${id}/sync`, { method: "POST" });
-      toast("订阅同步任务已触发", "success");
+      const outcome = await api(`/api/subscriptions/${id}/sync`, { method: "POST" });
+      presentSubscriptionSyncResult(outcome);
     } else if (action === "toggle") {
       await api(`/api/subscriptions/${id}`, { method: "PUT", body: JSON.stringify({ ...item, enabled: !item.enabled }) });
       toast(item.enabled ? "订阅已禁用" : "订阅已启用", "success");
@@ -360,11 +372,11 @@ async function saveManualNodes(event) {
   try {
     if (id) {
       await api(`/api/manual-nodes/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+      clearFeedback("#manualNodeImportFeedback");
       toast("节点已更新", "success");
     } else {
       const result = await api("/api/manual-nodes", { method: "POST", body: JSON.stringify(payload) });
-      const failed = result?.parse_errors?.length || 0;
-      toast(failed ? `节点已导入，${failed} 条解析失败` : "节点已导入", failed ? "info" : "success");
+      presentManualNodeImportResult(result);
     }
     resetForm(form);
     await loadManualNodes();
@@ -457,6 +469,51 @@ function bindNodeCardActions(container, sourceType) {
       }
     });
   });
+}
+
+function presentManualNodeImportResult(result) {
+  const createdCount = result?.items?.length || 0;
+  const errors = result?.parse_errors || [];
+  if (!errors.length) {
+    clearFeedback("#manualNodeImportFeedback");
+    toast(`节点已导入，共 ${createdCount} 条`, "success");
+    return;
+  }
+  setFeedback("#manualNodeImportFeedback", {
+    tone: "info",
+    title: `导入完成：成功 ${createdCount} 条，失败 ${errors.length} 条`,
+    message: "以下是解析失败摘要：",
+    items: errors,
+  });
+  toast(`节点已导入，${errors.length} 条解析失败`, "info");
+}
+
+function presentSubscriptionSyncResult(outcome) {
+  const status = outcome?.status || "";
+  const createdCount = Number(outcome?.created_count || 0);
+  const failedCount = Number(outcome?.failed_count || 0);
+  const errors = outcome?.errors || [];
+  if (status === "not_modified") {
+    setFeedback("#subscriptionSyncFeedback", {
+      tone: "info",
+      title: "订阅同步完成",
+      message: "订阅内容未发生变化，已保留现有节点。",
+    });
+    toast("订阅内容未变化", "info");
+    return;
+  }
+  if (failedCount > 0) {
+    setFeedback("#subscriptionSyncFeedback", {
+      tone: "info",
+      title: `订阅同步完成：导入 ${createdCount} 条，失败 ${failedCount} 条`,
+      message: "以下是解析失败摘要：",
+      items: errors,
+    });
+    toast(`订阅同步完成，${failedCount} 条解析失败`, "info");
+    return;
+  }
+  clearFeedback("#subscriptionSyncFeedback");
+  toast(`订阅同步完成，共导入 ${createdCount} 条节点`, "success");
 }
 
 async function triggerNodeAction(sourceType, id, action) {
@@ -805,6 +862,28 @@ function toast(message, type = "info") {
   el.textContent = message;
   container.appendChild(el);
   setTimeout(() => el.remove(), 3200);
+}
+
+function setFeedback(selector, { title = "", message = "", items = [], tone = "info" } = {}) {
+  const container = $(selector);
+  if (!container) return;
+  const safeItems = Array.isArray(items) ? items.slice(0, 8) : [];
+  const safeTone = ["success", "info", "error"].includes(tone) ? tone : "info";
+  container.hidden = false;
+  container.className = `feedback-panel ${safeTone}`;
+  container.innerHTML = `
+    ${title ? `<strong>${escapeHTML(title)}</strong>` : ""}
+    ${message ? `<div class="muted">${escapeHTML(message)}</div>` : ""}
+    ${safeItems.length ? `<ul class="feedback-list">${safeItems.map((item) => `<li>${escapeHTML(item)}</li>`).join("")}</ul>` : ""}
+  `;
+}
+
+function clearFeedback(selector) {
+  const container = $(selector);
+  if (!container) return;
+  container.hidden = true;
+  container.className = "feedback-panel";
+  container.innerHTML = "";
 }
 
 function setButtonLoading(button, loading) {

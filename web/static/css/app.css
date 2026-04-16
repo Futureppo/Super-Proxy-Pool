@@ -321,6 +321,40 @@ textarea { resize: vertical; }
   border-top: 1px dashed var(--border);
 }
 
+.feedback-panel {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+}
+.feedback-panel[hidden] {
+  display: none;
+}
+.feedback-panel.success {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.feedback-panel.info {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+}
+.feedback-panel.error {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.feedback-panel strong {
+  display: block;
+  margin-bottom: 4px;
+}
+.feedback-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.feedback-list li + li {
+  margin-top: 4px;
+}
+
 .toast-container {
   position: fixed;
   right: 20px;
@@ -335,6 +369,7 @@ textarea { resize: vertical; }
   padding: 12px 14px;
   box-shadow: var(--shadow);
   color: white;
+  white-space: pre-line;
 }
 .toast.success { background: #0f766e; }
 .toast.error { background: #b42318; }
