@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +16,12 @@ import (
 	"time"
 
 	"super-proxy-pool/internal/pools"
+)
+
+const (
+	protocolDetectTimeout = 5 * time.Second
+	maxHTTPStartLineBytes = 4096
+	maxHTTPHeaderBytes    = 32 * 1024
 )
 
 // Mux multiplexes a single TCP listener into proxy traffic (SOCKS5 / HTTP proxy)
@@ -64,7 +72,7 @@ func (m *Mux) Serve() error {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		if err := m.httpServer.Serve(pl); err != nil && err != http.ErrServerClosed {
+		if err := m.httpServer.Serve(pl); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			log.Printf("proxy mux: http server error: %v", err)
 		}
 	}()
@@ -116,7 +124,8 @@ func (m *Mux) untrackConn(c net.Conn) {
 }
 
 func (m *Mux) handleConn(conn net.Conn, httpConns chan<- net.Conn) {
-	br := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(protocolDetectTimeout))
+	br := bufio.NewReaderSize(conn, maxHTTPHeaderBytes)
 	firstByte, err := br.Peek(1)
 	if err != nil {
 		conn.Close()
@@ -133,18 +142,18 @@ func (m *Mux) handleConn(conn net.Conn, httpConns chan<- net.Conn) {
 
 	// Peek a small amount to check if this is an HTTP proxy request.
 	// Only peek what's already buffered + a small amount to avoid blocking.
-	line, err := br.Peek(min(br.Buffered()+32, 4096))
-	if err != nil && err != io.EOF && err != bufio.ErrBufferFull {
+	line, err := peekRequestLine(br)
+	if err != nil {
 		conn.Close()
 		return
 	}
-	lineStr := string(line)
 
-	// HTTP CONNECT method or proxy-style absolute URL request
-	if isHTTPProxyRequest(lineStr) {
-		m.handleHTTPProxy(pc, lineStr)
+	if isHTTPProxyRequest(line) {
+		m.handleHTTPProxy(pc)
 		return
 	}
+
+	_ = conn.SetReadDeadline(time.Time{})
 
 	// Regular HTTP → pass to HTTP server. Avoid blocking indefinitely if the
 	// queue is full or the mux is shutting down.
@@ -238,7 +247,13 @@ func (m *Mux) handleSOCKS5(conn *peekedConn) {
 	conn.Write([]byte{0x01, 0x00}) // Auth success
 
 	// Connect to internal Mihomo listener and relay the rest
-	internalAddr := fmt.Sprintf("127.0.0.1:%d", pools.InternalPort(pool.ID))
+	internalPort, err := pools.InternalPort(pool.ID)
+	if err != nil {
+		log.Printf("proxy mux: invalid internal port for pool %d: %v", pool.ID, err)
+		conn.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	internalAddr := fmt.Sprintf("127.0.0.1:%d", internalPort)
 	upstream, err := net.DialTimeout("tcp", internalAddr, 5*time.Second)
 	if err != nil {
 		log.Printf("proxy mux: failed to dial internal %s: %v", internalAddr, err)
@@ -247,6 +262,7 @@ func (m *Mux) handleSOCKS5(conn *peekedConn) {
 		return
 	}
 	defer upstream.Close()
+	_ = upstream.SetDeadline(time.Now().Add(protocolDetectTimeout))
 
 	// Handshake with internal Mihomo SOCKS5 listener.
 	// Offer both no-auth (0x00) and username/password (0x02).
@@ -299,15 +315,24 @@ func (m *Mux) handleSOCKS5(conn *peekedConn) {
 	defer m.untrackConn(conn)
 	defer m.untrackConn(upstream)
 
+	_ = conn.SetReadDeadline(time.Time{})
+	_ = upstream.SetDeadline(time.Time{})
+
 	// Now relay: client's SOCKS5 request/reply and all subsequent data go straight through
 	relay(conn, upstream)
 }
 
-func (m *Mux) handleHTTPProxy(conn *peekedConn, firstLine string) {
+func (m *Mux) handleHTTPProxy(conn *peekedConn) {
 	defer conn.Close()
 
-	// Parse Proxy-Authorization header from the peeked data
-	username, password := extractProxyAuth(firstLine)
+	header, err := peekHTTPHeader(conn.reader)
+	if err != nil {
+		conn.Write([]byte("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"))
+		return
+	}
+
+	// Parse Proxy-Authorization header from the full request header.
+	username, password := extractProxyAuth(header)
 	if username == "" {
 		// Send 407 Proxy Authentication Required
 		resp := "HTTP/1.1 407 Proxy Authentication Required\r\n" +
@@ -327,7 +352,14 @@ func (m *Mux) handleHTTPProxy(conn *peekedConn, firstLine string) {
 	}
 
 	// Dial internal Mihomo HTTP proxy
-	internalAddr := fmt.Sprintf("127.0.0.1:%d", pools.InternalPort(pool.ID))
+	internalPort, err := pools.InternalPort(pool.ID)
+	if err != nil {
+		log.Printf("proxy mux: invalid internal port for pool %d: %v", pool.ID, err)
+		resp := "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+		conn.Write([]byte(resp))
+		return
+	}
+	internalAddr := fmt.Sprintf("127.0.0.1:%d", internalPort)
 	upstream, err := net.DialTimeout("tcp", internalAddr, 5*time.Second)
 	if err != nil {
 		log.Printf("proxy mux: failed to dial internal %s: %v", internalAddr, err)
@@ -343,8 +375,53 @@ func (m *Mux) handleHTTPProxy(conn *peekedConn, firstLine string) {
 	defer m.untrackConn(conn)
 	defer m.untrackConn(upstream)
 
+	_ = conn.SetReadDeadline(time.Time{})
+
 	// Relay everything from buffered conn to upstream (and back)
 	relay(conn, upstream)
+}
+
+func peekRequestLine(br *bufio.Reader) (string, error) {
+	line, err := peekBufferedUntil(br, []byte("\r\n"), maxHTTPStartLineBytes)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(string(line), "\r\n"), nil
+}
+
+func peekHTTPHeader(br *bufio.Reader) (string, error) {
+	header, err := peekBufferedUntil(br, []byte("\r\n\r\n"), maxHTTPHeaderBytes)
+	if err != nil {
+		return "", err
+	}
+	return string(header), nil
+}
+
+func peekBufferedUntil(br *bufio.Reader, delimiter []byte, maxBytes int) ([]byte, error) {
+	size := br.Buffered()
+	if size < 1 {
+		size = 1
+	}
+	if size > maxBytes {
+		size = maxBytes
+	}
+
+	for {
+		data, err := br.Peek(size)
+		if idx := bytes.Index(data, delimiter); idx >= 0 {
+			return data[:idx+len(delimiter)], nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if size >= maxBytes {
+			return nil, fmt.Errorf("request header exceeds %d bytes", maxBytes)
+		}
+		size = len(data) + 1
+		if size > maxBytes {
+			size = maxBytes
+		}
+	}
 }
 
 func extractProxyAuth(header string) (string, string) {

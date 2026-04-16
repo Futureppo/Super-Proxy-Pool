@@ -781,7 +781,7 @@ async function onPoolAction(event) {
       return;
     }
     if (action === "copy") {
-      await navigator.clipboard.writeText(poolConnectionString(item));
+      await navigator.clipboard.writeText(poolConnectionClipboardText(item));
       toast("连接信息已复制", "success");
       return;
     }
@@ -1134,6 +1134,19 @@ function poolConnectionString(item) {
   const username = encodeURIComponent(item.auth_username || "");
   const password = encodeURIComponent(item.auth_password_secret || "");
   return `socks5://${username}:${password}@服务器IP:${port}`;
+}
+
+function poolConnectionClipboardText(item) {
+  const port = state.settings?.panel_port || 7890;
+  const username = encodeURIComponent(item.auth_username || "");
+  const password = encodeURIComponent(item.auth_password_secret || "");
+  const socks5Url = `socks5://${username}:${password}@server-ip:${port}`;
+  const httpUrl = `http://${username}:${password}@server-ip:${port}`;
+  return [
+    `panel port: ${port}`,
+    `SOCKS5: ${socks5Url}`,
+    `HTTP: ${httpUrl}`,
+  ].join("\n");
 }
 
 function bindActionButtons(container, handler) {

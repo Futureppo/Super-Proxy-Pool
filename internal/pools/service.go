@@ -86,6 +86,7 @@ func (s *Service) Get(ctx context.Context, id int64) (models.ProxyPool, error) {
 }
 
 func (s *Service) Create(ctx context.Context, req UpsertRequest) (models.ProxyPool, error) {
+	req = normalizeUpsertRequest(req)
 	if err := s.validateUpsertRequest(ctx, 0, req); err != nil {
 		return models.ProxyPool{}, err
 	}
@@ -110,6 +111,7 @@ func (s *Service) Create(ctx context.Context, req UpsertRequest) (models.ProxyPo
 }
 
 func (s *Service) Update(ctx context.Context, id int64, req UpsertRequest) (models.ProxyPool, error) {
+	req = normalizeUpsertRequest(req)
 	if err := s.validateUpsertRequest(ctx, id, req); err != nil {
 		return models.ProxyPool{}, err
 	}
@@ -279,13 +281,14 @@ func (s *Service) Publish(ctx context.Context, poolID int64) error {
 }
 
 func (s *Service) validateUpsertRequest(ctx context.Context, currentID int64, req UpsertRequest) error {
-	if strings.TrimSpace(req.Name) == "" {
+	req = normalizeUpsertRequest(req)
+	if req.Name == "" {
 		return fmt.Errorf("pool name is required")
 	}
-	if strings.TrimSpace(req.AuthUsername) == "" {
+	if req.AuthUsername == "" {
 		return fmt.Errorf("auth_username is required (used to identify the pool)")
 	}
-	if strings.TrimSpace(req.AuthPasswordSecret) == "" {
+	if req.AuthPasswordSecret == "" {
 		return fmt.Errorf("auth_password_secret is required")
 	}
 	if err := s.validateUniqueUsername(ctx, currentID, req.AuthUsername); err != nil {
@@ -295,6 +298,7 @@ func (s *Service) validateUpsertRequest(ctx context.Context, currentID int64, re
 }
 
 func (s *Service) validateUniqueUsername(ctx context.Context, currentID int64, username string) error {
+	username = normalizeCredential(username)
 	var count int
 	err := s.store.DB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM proxy_pools WHERE auth_username = ? AND id != ?`, username, currentID,
@@ -310,6 +314,11 @@ func (s *Service) validateUniqueUsername(ctx context.Context, currentID int64, u
 
 // LookupPoolByAuth finds an enabled pool by username and password.
 func (s *Service) LookupPoolByAuth(ctx context.Context, username, password string) (*models.ProxyPool, error) {
+	username = normalizeCredential(username)
+	password = normalizeCredential(password)
+	if username == "" || password == "" {
+		return nil, nil
+	}
 	row := s.store.DB.QueryRowContext(ctx, `SELECT id, name, auth_username,
 		auth_password_secret, strategy, failover_enabled, enabled, last_published_at, last_publish_status, last_error,
 		created_at, updated_at, 0, 0 FROM proxy_pools WHERE enabled = 1 AND auth_username = ? AND auth_password_secret = ? LIMIT 1`,
@@ -411,6 +420,18 @@ func defaultStrategy(v string) string {
 	default:
 		return "round_robin"
 	}
+}
+
+func normalizeUpsertRequest(req UpsertRequest) UpsertRequest {
+	req.Name = strings.TrimSpace(req.Name)
+	req.AuthUsername = normalizeCredential(req.AuthUsername)
+	req.AuthPasswordSecret = normalizeCredential(req.AuthPasswordSecret)
+	req.Strategy = strings.TrimSpace(req.Strategy)
+	return req
+}
+
+func normalizeCredential(value string) string {
+	return strings.TrimSpace(value)
 }
 
 func boolToInt(v bool) int {

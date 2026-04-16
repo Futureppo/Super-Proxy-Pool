@@ -59,8 +59,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			failure_retry_count INTEGER NOT NULL DEFAULT 2,
 			log_level TEXT NOT NULL DEFAULT 'info',
 			speed_max_bytes INTEGER NOT NULL DEFAULT 5000000,
-			pool_port_min INTEGER NOT NULL DEFAULT 0,
-			pool_port_max INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL
 		);`,
@@ -162,12 +160,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration failed: %w", err)
 		}
 	}
-	if err := s.ensureColumn(ctx, "settings", "pool_port_min", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := s.ensureColumn(ctx, "settings", "pool_port_max", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
 	// Ensure auth_username column exists for upgraded databases
 	if err := s.ensureColumn(ctx, "proxy_pools", "auth_username", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
@@ -188,8 +180,28 @@ func (s *Store) migrateProxyPoolsDropLegacy(ctx context.Context) error {
 	if !s.hasColumn(ctx, "proxy_pools", "listen_port") {
 		return nil // already migrated
 	}
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("proxy_pools migration: acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("proxy_pools migration: disable foreign keys: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("proxy_pools migration: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS proxy_pools_new (
+		`DROP TABLE IF EXISTS proxy_pools_new`,
+		`CREATE TABLE proxy_pools_new (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			auth_username TEXT NOT NULL DEFAULT '',
@@ -213,9 +225,15 @@ func (s *Store) migrateProxyPoolsDropLegacy(ctx context.Context) error {
 		`ALTER TABLE proxy_pools_new RENAME TO proxy_pools`,
 	}
 	for _, stmt := range stmts {
-		if _, err := s.DB.ExecContext(ctx, stmt); err != nil {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("proxy_pools migration: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("proxy_pools migration: commit: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("proxy_pools migration: re-enable foreign keys: %w", err)
 	}
 	return nil
 }

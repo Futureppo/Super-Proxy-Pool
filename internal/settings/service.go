@@ -35,8 +35,8 @@ func (s *Service) EnsureDefaults(ctx context.Context, passwordHash string) error
 		id, panel_host, panel_port, password_hash, speed_test_enabled, latency_test_url, speed_test_url,
 		latency_timeout_ms, speed_timeout_ms, latency_concurrency, speed_concurrency,
 		default_subscription_interval_sec, mihomo_controller_secret, failure_retry_count, log_level,
-		speed_max_bytes, pool_port_min, pool_port_max, created_at, updated_at
-	) VALUES (1, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 2, 'info', ?, 0, 0, ?, ?)`,
+		speed_max_bytes, created_at, updated_at
+	) VALUES (1, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 2, 'info', ?, ?, ?)`,
 		s.cfg.PanelHost,
 		s.cfg.PanelPort,
 		passwordHash,

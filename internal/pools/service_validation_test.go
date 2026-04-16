@@ -92,4 +92,38 @@ func TestValidateUpsertRequestRequiresAuthFields(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("validateUpsertRequest() error = %v", err)
 	}
+
+	created, err := poolSvc.Create(ctx, UpsertRequest{
+		Name:               "  demo  ",
+		AuthUsername:       "  user  ",
+		AuthPasswordSecret: "  pass  ",
+		Strategy:           "round_robin",
+		FailoverEnabled:    true,
+		Enabled:            true,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.Name != "demo" || created.AuthUsername != "user" || created.AuthPasswordSecret != "pass" {
+		t.Fatalf("expected normalized credentials and name, got %#v", created)
+	}
+
+	if _, err := poolSvc.Create(ctx, UpsertRequest{
+		Name:               "duplicate",
+		AuthUsername:       "user",
+		AuthPasswordSecret: "other-pass",
+		Strategy:           "round_robin",
+		FailoverEnabled:    true,
+		Enabled:            true,
+	}); err == nil {
+		t.Fatalf("expected duplicate username validation error")
+	}
+
+	lookup, err := poolSvc.LookupPoolByAuth(ctx, " user ", " pass ")
+	if err != nil {
+		t.Fatalf("LookupPoolByAuth() error = %v", err)
+	}
+	if lookup == nil || lookup.ID != created.ID {
+		t.Fatalf("expected normalized auth lookup to find created pool, got %#v", lookup)
+	}
 }

@@ -114,7 +114,10 @@ func buildProdConfig(secret, controller, testURL, logLevel string, poolList []mo
 		root["proxy-groups"] = append(root["proxy-groups"].([]map[string]any), group)
 
 		// Internal listener on 127.0.0.1 with mixed type, one per pool
-		internalPort := InternalPort(pool.ID)
+		internalPort, err := InternalPort(pool.ID)
+		if err != nil {
+			return nil, err
+		}
 		listenerCfg := listener{
 			Name:   fmt.Sprintf("pool-%d", pool.ID),
 			Type:   "mixed",
@@ -135,12 +138,12 @@ func buildProdConfig(secret, controller, testURL, logLevel string, poolList []mo
 }
 
 // InternalPort returns the internal Mihomo listener port for a pool.
-func InternalPort(poolID int64) int {
+func InternalPort(poolID int64) (int, error) {
 	port := 30000 + int(poolID)
 	if port < 1 || port > 65535 {
-		panic(fmt.Sprintf("pool ID %d maps to invalid port %d", poolID, port))
+		return 0, fmt.Errorf("pool ID %d maps to invalid port %d", poolID, port)
 	}
-	return port
+	return port, nil
 }
 
 func buildProbeConfig(secret, controller string, probeMixedPort int, logLevel string, inventory []models.RuntimeNode) ([]byte, error) {
