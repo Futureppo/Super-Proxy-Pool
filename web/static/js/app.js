@@ -250,6 +250,8 @@ async function initSubscriptionsPage() {
 
 async function initSubscriptionDetailPage() {
   $("#subscriptionNodeSearch").addEventListener("input", renderSubscriptionNodes);
+  $("#subscriptionNodeStatusFilter").addEventListener("change", renderSubscriptionNodes);
+  $("#subscriptionNodeProtocolFilter").addEventListener("change", renderSubscriptionNodes);
   $("#subscriptionSyncSingleButton").addEventListener("click", async (event) => {
     const button = event.currentTarget;
     setButtonLoading(button, true);
@@ -480,9 +482,13 @@ async function onSubscriptionAction(event) {
 
 function renderSubscriptionNodes() {
   const keyword = ($("#subscriptionNodeSearch")?.value || "").trim().toLowerCase();
+  const statusFilter = $("#subscriptionNodeStatusFilter")?.value || "";
+  const protocolFilter = $("#subscriptionNodeProtocolFilter")?.value || "";
   const list = state.subscriptionNodes.filter((item) => {
-    if (!keyword) return true;
-    return `${item.display_name} ${item.protocol} ${item.server} ${item.last_status || ""}`.toLowerCase().includes(keyword);
+    if (keyword && !`${item.display_name} ${item.protocol} ${item.server} ${item.last_status || ""}`.toLowerCase().includes(keyword)) return false;
+    if (statusFilter && normalizeStatus(item) !== statusFilter) return false;
+    if (protocolFilter && item.protocol !== protocolFilter) return false;
+    return true;
   });
   const container = $("#subscriptionNodeList");
   if (!list.length) {

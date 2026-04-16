@@ -75,6 +75,23 @@
       <div id="subscriptionDetailMeta" class="meta-strip" aria-live="polite"></div>
       <div class="toolbar">
         <input id="subscriptionNodeSearch" type="search" placeholder="搜索节点名称、地址或协议">
+        <select id="subscriptionNodeStatusFilter" aria-label="节点状态筛选">
+          <option value="">全部状态</option>
+          <option value="available">可用</option>
+          <option value="unavailable">不可用</option>
+          <option value="testing">测试中</option>
+          <option value="disabled">已禁用</option>
+          <option value="unknown">未知</option>
+        </select>
+        <select id="subscriptionNodeProtocolFilter" aria-label="节点协议筛选">
+          <option value="">全部协议</option>
+          <option value="ss">ss</option>
+          <option value="trojan">trojan</option>
+          <option value="vmess">vmess</option>
+          <option value="vless">vless</option>
+          <option value="tuic">tuic</option>
+          <option value="hysteria2">hysteria2</option>
+        </select>
       </div>
       <div id="subscriptionNodeList" class="card-list"></div>
     </section>
