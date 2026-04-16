@@ -226,6 +226,7 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 	if err != nil {
 		return SyncOutcome{}, err
 	}
+	s.events.Publish("subscriptions.sync.started", map[string]any{"subscription_id": id})
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sub.URL, nil)
 	if err != nil {
 		return SyncOutcome{}, err
@@ -244,6 +245,7 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 	resp, err := s.doWithRetry(req, settingsRow.FailureRetryCount)
 	if err != nil {
 		_ = s.setSyncFailure(ctx, sub.ID, err.Error())
+		s.publishSyncFailure(sub.ID, err.Error())
 		return SyncOutcome{}, err
 	}
 	defer resp.Body.Close()
@@ -265,6 +267,7 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := fmt.Errorf("subscription fetch failed: %s", resp.Status)
 		_ = s.setSyncFailure(ctx, sub.ID, err.Error())
+		s.publishSyncFailure(sub.ID, err.Error())
 		return SyncOutcome{}, err
 	}
 	body, err := io.ReadAll(resp.Body)
@@ -275,6 +278,7 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 	if len(result.Nodes) == 0 {
 		err := errors.New("no nodes parsed from subscription")
 		_ = s.setSyncFailure(ctx, sub.ID, err.Error())
+		s.publishSyncFailure(sub.ID, err.Error())
 		return SyncOutcome{}, err
 	}
 
@@ -412,6 +416,13 @@ func (s *Service) setSyncNotModified(ctx context.Context, id int64, syncedAt tim
 		syncedAt, "not_modified", "", syncedAt, id,
 	)
 	return err
+}
+
+func (s *Service) publishSyncFailure(id int64, message string) {
+	s.events.Publish("subscriptions.sync.failed", map[string]any{
+		"subscription_id": id,
+		"message":         message,
+	})
 }
 
 func scanSubscription(scanner interface{ Scan(dest ...any) error }) (models.Subscription, error) {

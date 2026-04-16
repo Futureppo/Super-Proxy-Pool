@@ -217,7 +217,7 @@ func (s *Service) AvailableCandidates(ctx context.Context) ([]models.PoolMemberV
 }
 
 func (s *Service) Publish(ctx context.Context, poolID int64) error {
-	_ = poolID
+	s.events.Publish("pools.publish.started", map[string]any{"pool_id": poolID})
 	settingsRow, err := s.settingsSvc.Get(ctx)
 	if err != nil {
 		s.markPublishFailure(ctx, err)

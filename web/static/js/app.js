@@ -66,7 +66,7 @@ function bindCommon() {
 function connectEvents() {
   if (page === "login" || !window.EventSource) return;
   state.eventSource = new EventSource("/api/events");
-  state.eventSource.onmessage = () => scheduleReload();
+  state.eventSource.onmessage = (event) => handleServerEvent(event.data);
   state.eventSource.onerror = () => {
     if (state.eventSource) {
       state.eventSource.close();
@@ -87,6 +87,140 @@ function scheduleReload() {
     }
     if (page === "settings") loadSettings();
   }, 250);
+}
+
+function handleServerEvent(raw) {
+  let event;
+  try {
+    event = JSON.parse(raw);
+  } catch (error) {
+    scheduleReload();
+    return;
+  }
+  const type = event?.type || "";
+  const payload = event?.payload || {};
+  if (!type) {
+    scheduleReload();
+    return;
+  }
+
+  if (type === "subscriptions.sync.started") {
+    handleSubscriptionSyncStarted(payload);
+    return;
+  }
+  if (type === "subscriptions.sync.failed") {
+    handleSubscriptionSyncFailed(payload);
+    return;
+  }
+  if (type === "subscriptions.synced") {
+    handleSubscriptionSynced(payload);
+    return;
+  }
+  if (type.startsWith("probe.")) {
+    handleProbeEvent(type, payload);
+    return;
+  }
+  if (type.startsWith("pools.")) {
+    handlePoolEvent(type, payload);
+    return;
+  }
+  if (type.startsWith("manual_nodes.")) {
+    if (page === "manual-nodes" || page === "pools") scheduleReload();
+    return;
+  }
+  if (type.startsWith("subscriptions.")) {
+    if (page === "subscriptions" || page === "subscription-detail" || page === "pools") scheduleReload();
+    return;
+  }
+  if (type.startsWith("settings.")) {
+    if (page === "settings") scheduleReload();
+    return;
+  }
+
+  scheduleReload();
+}
+
+function handleSubscriptionSyncStarted(payload) {
+  if (page === "subscription-detail" && isCurrentSubscriptionEvent(payload)) {
+    setFeedback("#subscriptionSyncFeedback", {
+      tone: "info",
+      title: "订阅同步中",
+      message: "正在抓取并解析订阅内容，请稍候…",
+    });
+    return;
+  }
+  if (page === "subscriptions") {
+    setFeedback("#subscriptionSyncFeedback", {
+      tone: "info",
+      title: "订阅同步中",
+      message: "后台已开始抓取订阅，列表会自动刷新。",
+    });
+  }
+}
+
+function handleSubscriptionSyncFailed(payload) {
+  const message = payload?.message || "订阅同步失败";
+  if (page === "subscription-detail" && isCurrentSubscriptionEvent(payload)) {
+    setFeedback("#subscriptionSyncFeedback", {
+      tone: "error",
+      title: "订阅同步失败",
+      message,
+    });
+    scheduleReload();
+    return;
+  }
+  if (page === "subscriptions") {
+    setFeedback("#subscriptionSyncFeedback", {
+      tone: "error",
+      title: "订阅同步失败",
+      message,
+    });
+  }
+  toast(message, "error");
+  scheduleReload();
+}
+
+function handleSubscriptionSynced(payload) {
+  if (page === "subscription-detail" && isCurrentSubscriptionEvent(payload)) {
+    presentSubscriptionSyncResult(payload?.outcome || {});
+    scheduleReload();
+    return;
+  }
+  if (page === "subscriptions") {
+    presentSubscriptionSyncResult(payload?.outcome || {});
+    scheduleReload();
+  }
+}
+
+function handleProbeEvent(type, payload) {
+  if (page === "manual-nodes" && payload?.source_type === "manual") {
+    scheduleReload();
+    return;
+  }
+  if (page === "subscription-detail" && payload?.source_type === "subscription") {
+    scheduleReload();
+    return;
+  }
+  if (page === "subscriptions" && payload?.source_type === "subscription") {
+    scheduleReload();
+    return;
+  }
+  if (page === "pools") {
+    scheduleReload();
+    return;
+  }
+  if (type === "probe.finished" && page === "settings") {
+    scheduleReload();
+  }
+}
+
+function handlePoolEvent(type, payload) {
+  if (type === "pools.publish.failed") {
+    toast(payload?.error || "代理池发布失败", "error");
+  }
+  if (page === "pools") {
+    scheduleReload();
+  }
 }
 
 function initLoginPage() {
@@ -514,6 +648,10 @@ function presentSubscriptionSyncResult(outcome) {
   }
   clearFeedback("#subscriptionSyncFeedback");
   toast(`订阅同步完成，共导入 ${createdCount} 条节点`, "success");
+}
+
+function isCurrentSubscriptionEvent(payload) {
+  return String(payload?.subscription_id || "") === String(subscriptionId || "");
 }
 
 async function triggerNodeAction(sourceType, id, action) {
