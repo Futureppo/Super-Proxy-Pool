@@ -169,3 +169,105 @@ func TestSyncNotModifiedPreservesExistingNodes(t *testing.T) {
 		t.Fatalf("preserved node name = %q, want %q", nodes[0].DisplayName, "persist-node")
 	}
 }
+
+func TestAddAfterSyncHookRunsAllHooks(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	cfg := config.App{
+		PanelHost:               "127.0.0.1",
+		PanelPort:               7890,
+		DataDir:                 tempDir,
+		DBPath:                  filepath.Join(tempDir, "app.db"),
+		RuntimeDir:              filepath.Join(tempDir, "runtime"),
+		ProdConfigPath:          filepath.Join(tempDir, "runtime", "mihomo-prod.yaml"),
+		ProbeConfigPath:         filepath.Join(tempDir, "runtime", "mihomo-probe.yaml"),
+		ProdControllerAddr:      "127.0.0.1:19090",
+		ProbeControllerAddr:     "127.0.0.1:19091",
+		ProbeMixedPort:          17891,
+		DefaultControllerSecret: "secret-token",
+	}
+	if err := config.EnsureDirs(cfg); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+	store, err := db.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	defer store.Close()
+
+	settingsSvc := settings.NewService(store, cfg)
+	hash, err := auth.HashPassword("admin")
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+	if err := settingsSvc.EnsureDefaults(ctx, hash); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/yaml")
+		_, _ = w.Write([]byte(`proxies:
+  - name: demo-node
+    type: trojan
+    server: demo.example.com
+    port: 443
+    password: secret
+`))
+	}))
+	defer server.Close()
+
+	svc := NewService(store, settingsSvc, events.NewBroker())
+	sub, err := svc.Create(ctx, UpsertRequest{
+		Name:            "hook-demo",
+		URL:             server.URL,
+		Enabled:         true,
+		SyncIntervalSec: 3600,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	type hookResult struct {
+		name           string
+		subscriptionID int64
+		nodeCount      int
+	}
+	results := make(chan hookResult, 2)
+	svc.AddAfterSyncHook(func(_ context.Context, subscriptionID int64, nodeIDs []int64) {
+		results <- hookResult{name: "hook-1", subscriptionID: subscriptionID, nodeCount: len(nodeIDs)}
+	})
+	svc.AddAfterSyncHook(func(_ context.Context, subscriptionID int64, nodeIDs []int64) {
+		results <- hookResult{name: "hook-2", subscriptionID: subscriptionID, nodeCount: len(nodeIDs)}
+	})
+
+	outcome, err := svc.Sync(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if !outcome.Modified || outcome.CreatedCount != 1 {
+		t.Fatalf("unexpected sync outcome: %+v", outcome)
+	}
+
+	received := map[string]hookResult{}
+	for range 2 {
+		select {
+		case item := <-results:
+			received[item.name] = item
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for after-sync hooks")
+		}
+	}
+
+	for _, hookName := range []string{"hook-1", "hook-2"} {
+		item, ok := received[hookName]
+		if !ok {
+			t.Fatalf("missing hook result for %s", hookName)
+		}
+		if item.subscriptionID != sub.ID {
+			t.Fatalf("%s subscriptionID = %d, want %d", hookName, item.subscriptionID, sub.ID)
+		}
+		if item.nodeCount != 1 {
+			t.Fatalf("%s nodeCount = %d, want 1", hookName, item.nodeCount)
+		}
+	}
+}

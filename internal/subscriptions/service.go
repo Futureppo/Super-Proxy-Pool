@@ -21,13 +21,13 @@ import (
 )
 
 type Service struct {
-	store         *db.Store
-	settingsSvc   *settings.Service
-	events        *events.Broker
-	client        *http.Client
-	mu            sync.Mutex
-	syncing       map[int64]struct{}
-	afterSyncHook func(context.Context, int64, []int64)
+	store          *db.Store
+	settingsSvc    *settings.Service
+	events         *events.Broker
+	client         *http.Client
+	mu             sync.Mutex
+	syncing        map[int64]struct{}
+	afterSyncHooks []func(context.Context, int64, []int64)
 }
 
 type UpsertRequest struct {
@@ -68,7 +68,20 @@ func NewService(store *db.Store, settingsSvc *settings.Service, broker *events.B
 func (s *Service) SetAfterSyncHook(fn func(context.Context, int64, []int64)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.afterSyncHook = fn
+	if fn == nil {
+		s.afterSyncHooks = nil
+		return
+	}
+	s.afterSyncHooks = []func(context.Context, int64, []int64){fn}
+}
+
+func (s *Service) AddAfterSyncHook(fn func(context.Context, int64, []int64)) {
+	if fn == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.afterSyncHooks = append(s.afterSyncHooks, fn)
 }
 
 func (s *Service) StartScheduler(ctx context.Context) {
@@ -307,11 +320,16 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 	}
 	s.events.Publish("subscriptions.synced", map[string]any{"subscription_id": id, "outcome": outcome})
 	s.mu.Lock()
-	hook := s.afterSyncHook
+	hooks := append([]func(context.Context, int64, []int64){}, s.afterSyncHooks...)
 	s.mu.Unlock()
-	if hook != nil && len(createdIDs) > 0 {
+	if len(createdIDs) > 0 {
 		nodeIDs := append([]int64(nil), createdIDs...)
-		go hook(context.Background(), sub.ID, nodeIDs)
+		for _, hook := range hooks {
+			if hook == nil {
+				continue
+			}
+			go hook(context.Background(), sub.ID, nodeIDs)
+		}
 	}
 	return outcome, nil
 }

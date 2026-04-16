@@ -78,6 +78,13 @@ func main() {
 			_ = probeSvc.EnqueueLatency("subscription", nodeID)
 		}
 	})
+	subSvc.AddAfterSyncHook(func(ctx context.Context, subscriptionID int64, nodeIDs []int64) {
+		_ = subscriptionID
+		_ = nodeIDs
+		publishCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		_ = poolSvc.Publish(publishCtx, 0)
+	})
 	if err := mihomoMgr.Start(context.Background(), currentSettings.MihomoControllerSecret); err != nil {
 		log.Printf("mihomo start skipped: %v", err)
 	}
