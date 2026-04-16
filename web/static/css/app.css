@@ -241,6 +241,12 @@ textarea { resize: vertical; }
   flex-wrap: wrap;
   gap: 10px 14px;
 }
+.entity-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
 .entity-head {
   align-items: center;
   justify-content: space-between;
@@ -313,6 +319,19 @@ textarea { resize: vertical; }
 }
 .node-card .entity-meta {
   margin-top: 6px;
+}
+.entity-notice {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+  color: var(--text-muted);
+}
+.error-copy {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #991b1b;
 }
 
 .danger-zone {

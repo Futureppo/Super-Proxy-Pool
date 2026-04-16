@@ -731,7 +731,10 @@ function renderPools() {
     <article class="entity-card">
       <div class="entity-head">
         <div class="entity-title">${escapeHTML(item.name)}</div>
-        <span class="badge ${item.enabled ? "available" : "disabled"}">${item.enabled ? "运行中" : "已停用"}</span>
+        <div class="entity-badges">
+          <span class="badge ${item.enabled ? "available" : "disabled"}">${item.enabled ? "运行中" : "已停用"}</span>
+          <span class="badge ${publishStatusClass(item.last_publish_status)}">${publishStatusText(item.last_publish_status)}</span>
+        </div>
       </div>
       <div class="entity-meta muted">
         <span>${escapeHTML(String(item.protocol || "").toUpperCase())}</span>
@@ -739,11 +742,14 @@ function renderPools() {
         <span>${escapeHTML(item.strategy || "-")}</span>
       </div>
       <div class="entity-metrics">
+        <span>运行状态：${item.enabled ? "运行中" : "已停用"}</span>
+        <span>发布状态：${publishStatusText(item.last_publish_status)}</span>
         <span>成员数：${item.current_member_count ?? 0}</span>
         <span>健康数：${item.current_healthy_count ?? 0}</span>
         <span>认证：${item.auth_enabled ? "已开启" : "已关闭"}</span>
         <span>最近发布：${formatTime(item.last_published_at)}</span>
       </div>
+      ${item.last_error ? `<div class="entity-notice error-copy">最近错误：${escapeHTML(item.last_error)}</div>` : ""}
       <div class="entity-meta muted pool-connection">
         <span>连接：<code>${escapeHTML(poolConnectAddress(item))}</code></span>
         ${item.auth_enabled ? `<span>用户名：<code>${escapeHTML(item.auth_username || "-")}</code></span>` : ""}
@@ -1074,6 +1080,7 @@ function statusText(item) {
 function syncStatusClass(value) {
   const status = String(value || "").toLowerCase();
   if (status.includes("success") || status.includes("ok")) return "available";
+  if (status.includes("publish")) return "available";
   if (status.includes("error") || status.includes("fail")) return "unavailable";
   return "disabled";
 }
@@ -1147,4 +1154,20 @@ function bindActionButtons(container, handler) {
   $$("button[data-action]", container).forEach((button) => {
     button.addEventListener("click", handler);
   });
+}
+
+function publishStatusText(value) {
+  const status = String(value || "").toLowerCase();
+  if (!status) return "未发布";
+  if (status.includes("publish") || status.includes("ok") || status.includes("success")) return "已发布";
+  if (status.includes("fail") || status.includes("error")) return "发布失败";
+  return value;
+}
+
+function publishStatusClass(value) {
+  const status = String(value || "").toLowerCase();
+  if (!status) return "disabled";
+  if (status.includes("publish") || status.includes("ok") || status.includes("success")) return "available";
+  if (status.includes("fail") || status.includes("error")) return "unavailable";
+  return "disabled";
 }
