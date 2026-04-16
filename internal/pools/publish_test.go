@@ -12,12 +12,8 @@ func TestBuildPublishBundle(t *testing.T) {
 		{
 			ID:                 1,
 			Name:               "demo",
-			Protocol:           "http",
-			ListenHost:         "0.0.0.0",
-			ListenPort:         18080,
 			Strategy:           "round_robin",
 			Enabled:            true,
-			AuthEnabled:        true,
 			AuthUsername:       "user",
 			AuthPasswordSecret: "pass",
 		},

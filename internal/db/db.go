@@ -120,10 +120,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS proxy_pools (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
-			protocol TEXT NOT NULL,
-			listen_host TEXT NOT NULL,
-			listen_port INTEGER NOT NULL,
-			auth_enabled INTEGER NOT NULL DEFAULT 0,
 			auth_username TEXT NOT NULL DEFAULT '',
 			auth_password_secret TEXT NOT NULL DEFAULT '',
 			strategy TEXT NOT NULL,
@@ -135,7 +131,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL
 		);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_pools_listen_port ON proxy_pools(listen_port);`,
 		`CREATE TABLE IF NOT EXISTS proxy_pool_members (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			pool_id INTEGER NOT NULL,
@@ -171,6 +166,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "settings", "pool_port_max", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// Ensure auth_username column exists for upgraded databases
+	if err := s.ensureColumn(ctx, "proxy_pools", "auth_username", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "proxy_pools", "auth_password_secret", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil

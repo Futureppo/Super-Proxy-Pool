@@ -27,10 +27,6 @@ type Service struct {
 
 type UpsertRequest struct {
 	Name               string `json:"name"`
-	Protocol           string `json:"protocol"`
-	ListenHost         string `json:"listen_host"`
-	ListenPort         int    `json:"listen_port"`
-	AuthEnabled        bool   `json:"auth_enabled"`
 	AuthUsername       string `json:"auth_username"`
 	AuthPasswordSecret string `json:"auth_password_secret"`
 	Strategy           string `json:"strategy"`
@@ -57,7 +53,7 @@ func NewService(store *db.Store, settingsSvc *settings.Service, manualNodes *nod
 }
 
 func (s *Service) List(ctx context.Context) ([]models.ProxyPool, error) {
-	rows, err := s.store.DB.QueryContext(ctx, `SELECT p.id, p.name, p.protocol, p.listen_host, p.listen_port, p.auth_enabled, p.auth_username,
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT p.id, p.name, p.auth_username,
 		p.auth_password_secret, p.strategy, p.failover_enabled, p.enabled, p.last_published_at, p.last_publish_status, p.last_error,
 		p.created_at, p.updated_at, COUNT(m.id) AS member_count,
 		SUM(CASE WHEN ((m.source_type='manual' AND mn.last_status='available') OR (m.source_type='subscription' AND sn.last_status='available')) THEN 1 ELSE 0 END) AS healthy_count
@@ -83,7 +79,7 @@ func (s *Service) List(ctx context.Context) ([]models.ProxyPool, error) {
 }
 
 func (s *Service) Get(ctx context.Context, id int64) (models.ProxyPool, error) {
-	row := s.store.DB.QueryRowContext(ctx, `SELECT id, name, protocol, listen_host, listen_port, auth_enabled, auth_username,
+	row := s.store.DB.QueryRowContext(ctx, `SELECT id, name, auth_username,
 		auth_password_secret, strategy, failover_enabled, enabled, last_published_at, last_publish_status, last_error,
 		created_at, updated_at, 0, 0 FROM proxy_pools WHERE id = ?`, id)
 	return scanPool(row)
@@ -95,11 +91,11 @@ func (s *Service) Create(ctx context.Context, req UpsertRequest) (models.ProxyPo
 	}
 	now := time.Now().UTC()
 	res, err := s.store.DB.ExecContext(ctx, `INSERT INTO proxy_pools (
-		name, protocol, listen_host, listen_port, auth_enabled, auth_username, auth_password_secret,
+		name, auth_username, auth_password_secret,
 		strategy, failover_enabled, enabled, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		req.Name, defaultProtocol(req.Protocol), defaultHost(req.ListenHost), req.ListenPort, boolToInt(req.AuthEnabled),
-		req.AuthUsername, req.AuthPasswordSecret, defaultStrategy(req.Strategy), boolToInt(req.FailoverEnabled),
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.Name, req.AuthUsername, req.AuthPasswordSecret,
+		defaultStrategy(req.Strategy), boolToInt(req.FailoverEnabled),
 		boolToInt(req.Enabled), now, now,
 	)
 	if err != nil {
@@ -117,10 +113,10 @@ func (s *Service) Update(ctx context.Context, id int64, req UpsertRequest) (mode
 	if err := s.validateUpsertRequest(ctx, id, req); err != nil {
 		return models.ProxyPool{}, err
 	}
-	_, err := s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET name = ?, protocol = ?, listen_host = ?, listen_port = ?,
-		auth_enabled = ?, auth_username = ?, auth_password_secret = ?, strategy = ?, failover_enabled = ?, enabled = ?, updated_at = ?
+	_, err := s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET name = ?,
+		auth_username = ?, auth_password_secret = ?, strategy = ?, failover_enabled = ?, enabled = ?, updated_at = ?
 		WHERE id = ?`,
-		req.Name, defaultProtocol(req.Protocol), defaultHost(req.ListenHost), req.ListenPort, boolToInt(req.AuthEnabled),
+		req.Name,
 		req.AuthUsername, req.AuthPasswordSecret, defaultStrategy(req.Strategy), boolToInt(req.FailoverEnabled), boolToInt(req.Enabled),
 		time.Now().UTC(), id,
 	)
@@ -286,47 +282,50 @@ func (s *Service) Publish(ctx context.Context, poolID int64) error {
 	return err
 }
 
-func (s *Service) validatePort(ctx context.Context, candidatePort int, currentID int64) error {
-	settingsRow, err := s.settingsSvc.Get(ctx)
-	if err != nil {
-		return err
-	}
-	if settingsRow.PoolPortMin > 0 && settingsRow.PoolPortMax > 0 {
-		if candidatePort < settingsRow.PoolPortMin || candidatePort > settingsRow.PoolPortMax {
-			return fmt.Errorf("listen port %d is outside the allowed pool port range %d-%d", candidatePort, settingsRow.PoolPortMin, settingsRow.PoolPortMax)
-		}
-	}
-	pools, err := s.List(ctx)
-	if err != nil {
-		return err
-	}
-	return ValidatePortConflict(settingsRow.PanelPort, pools, currentID, candidatePort)
-}
-
 func (s *Service) validateUpsertRequest(ctx context.Context, currentID int64, req UpsertRequest) error {
 	if strings.TrimSpace(req.Name) == "" {
 		return fmt.Errorf("pool name is required")
 	}
-	if req.ListenPort < 1 || req.ListenPort > 65535 {
-		return fmt.Errorf("listen_port must be between 1 and 65535")
+	if strings.TrimSpace(req.AuthUsername) == "" {
+		return fmt.Errorf("auth_username is required (used to identify the pool)")
 	}
-	if err := s.validatePort(ctx, req.ListenPort, currentID); err != nil {
+	if strings.TrimSpace(req.AuthPasswordSecret) == "" {
+		return fmt.Errorf("auth_password_secret is required")
+	}
+	if err := s.validateUniqueUsername(ctx, currentID, req.AuthUsername); err != nil {
 		return err
 	}
-	switch strings.ToLower(strings.TrimSpace(req.Protocol)) {
-	case "", "http", "socks":
-	default:
-		return fmt.Errorf("protocol must be http or socks")
+	return nil
+}
+
+func (s *Service) validateUniqueUsername(ctx context.Context, currentID int64, username string) error {
+	pools, err := s.List(ctx)
+	if err != nil {
+		return err
 	}
-	if req.AuthEnabled {
-		if strings.TrimSpace(req.AuthUsername) == "" {
-			return fmt.Errorf("auth_username is required when auth is enabled")
+	for _, pool := range pools {
+		if pool.ID == currentID {
+			continue
 		}
-		if strings.TrimSpace(req.AuthPasswordSecret) == "" {
-			return fmt.Errorf("auth_password_secret is required when auth is enabled")
+		if pool.AuthUsername == username {
+			return fmt.Errorf("username %q is already used by pool %q", username, pool.Name)
 		}
 	}
 	return nil
+}
+
+// LookupPoolByAuth finds an enabled pool by username and password.
+func (s *Service) LookupPoolByAuth(ctx context.Context, username, password string) (*models.ProxyPool, error) {
+	pools, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, pool := range pools {
+		if pool.Enabled && pool.AuthUsername == username && pool.AuthPasswordSecret == password {
+			return &pool, nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *Service) runtimeMembersForPool(ctx context.Context, poolID int64) ([]models.RuntimeNode, error) {
@@ -383,19 +382,13 @@ func (s *Service) markPublishFailure(ctx context.Context, cause error) {
 	s.events.Publish("pools.publish.failed", map[string]string{"error": cause.Error()})
 }
 
-func ValidatePortConflict(panelPort int, pools []models.ProxyPool, currentID int64, candidatePort int) error {
-	if candidatePort < 1 || candidatePort > 65535 {
-		return fmt.Errorf("listen port must be between 1 and 65535")
-	}
-	if candidatePort == panelPort {
-		return fmt.Errorf("listen port %d conflicts with panel port", candidatePort)
-	}
+func ValidateUsernameUnique(pools []models.ProxyPool, currentID int64, username string) error {
 	for _, pool := range pools {
 		if pool.ID == currentID {
 			continue
 		}
-		if pool.ListenPort == candidatePort {
-			return fmt.Errorf("listen port %d is already used by pool %q", candidatePort, pool.Name)
+		if pool.AuthUsername == username {
+			return fmt.Errorf("username %q is already used by pool %q", username, pool.Name)
 		}
 	}
 	return nil
@@ -403,20 +396,18 @@ func ValidatePortConflict(panelPort int, pools []models.ProxyPool, currentID int
 
 func scanPool(scanner interface{ Scan(dest ...any) error }) (models.ProxyPool, error) {
 	var item models.ProxyPool
-	var authEnabled int
 	var failoverEnabled int
 	var enabled int
 	var lastPublishedAt sql.NullTime
 	var healthy sql.NullInt64
 	err := scanner.Scan(
-		&item.ID, &item.Name, &item.Protocol, &item.ListenHost, &item.ListenPort, &authEnabled, &item.AuthUsername,
+		&item.ID, &item.Name, &item.AuthUsername,
 		&item.AuthPasswordSecret, &item.Strategy, &failoverEnabled, &enabled, &lastPublishedAt, &item.LastPublishStatus,
 		&item.LastError, &item.CreatedAt, &item.UpdatedAt, &item.CurrentMemberCount, &healthy,
 	)
 	if err != nil {
 		return models.ProxyPool{}, err
 	}
-	item.AuthEnabled = authEnabled == 1
 	item.FailoverEnabled = failoverEnabled == 1
 	item.Enabled = enabled == 1
 	if lastPublishedAt.Valid {
@@ -436,20 +427,6 @@ func defaultStrategy(v string) string {
 	default:
 		return "round_robin"
 	}
-}
-
-func defaultProtocol(v string) string {
-	if v == "socks" {
-		return "socks"
-	}
-	return "http"
-}
-
-func defaultHost(v string) string {
-	if v == "" {
-		return "0.0.0.0"
-	}
-	return v
 }
 
 func boolToInt(v bool) int {

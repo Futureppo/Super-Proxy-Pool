@@ -59,7 +59,7 @@ func (s *Service) Get(ctx context.Context) (models.Settings, error) {
 	row := s.store.DB.QueryRowContext(ctx, `SELECT id, panel_host, panel_port, password_hash, speed_test_enabled,
 		latency_test_url, speed_test_url, latency_timeout_ms, speed_timeout_ms, latency_concurrency,
 		speed_concurrency, default_subscription_interval_sec, mihomo_controller_secret, failure_retry_count,
-		log_level, speed_max_bytes, pool_port_min, pool_port_max, created_at, updated_at FROM settings WHERE id = 1`)
+		log_level, speed_max_bytes, created_at, updated_at FROM settings WHERE id = 1`)
 	return scanSettings(row)
 }
 
@@ -87,11 +87,11 @@ func (s *Service) Update(ctx context.Context, current models.Settings) (models.S
 		panel_host = ?, panel_port = ?, speed_test_enabled = ?, latency_test_url = ?, speed_test_url = ?,
 		latency_timeout_ms = ?, speed_timeout_ms = ?, latency_concurrency = ?, speed_concurrency = ?,
 		default_subscription_interval_sec = ?, mihomo_controller_secret = ?, failure_retry_count = ?,
-		log_level = ?, speed_max_bytes = ?, pool_port_min = ?, pool_port_max = ?, updated_at = ? WHERE id = 1`,
+		log_level = ?, speed_max_bytes = ?, updated_at = ? WHERE id = 1`,
 		current.PanelHost, current.PanelPort, boolToInt(current.SpeedTestEnabled), current.LatencyTestURL, current.SpeedTestURL,
 		current.LatencyTimeoutMS, current.SpeedTimeoutMS, current.LatencyConcurrency, current.SpeedConcurrency,
 		current.DefaultSubscriptionIntervalSec, current.MihomoControllerSecret, current.FailureRetryCount,
-		current.LogLevel, current.SpeedMaxBytes, current.PoolPortMin, current.PoolPortMax, current.UpdatedAt,
+		current.LogLevel, current.SpeedMaxBytes, current.UpdatedAt,
 	)
 	if err != nil {
 		return models.Settings{}, false, err
@@ -112,7 +112,7 @@ func scanSettings(scanner interface{ Scan(dest ...any) error }) (models.Settings
 		&item.ID, &item.PanelHost, &item.PanelPort, &item.PasswordHash, &speedEnabled,
 		&item.LatencyTestURL, &item.SpeedTestURL, &item.LatencyTimeoutMS, &item.SpeedTimeoutMS,
 		&item.LatencyConcurrency, &item.SpeedConcurrency, &item.DefaultSubscriptionIntervalSec,
-		&item.MihomoControllerSecret, &item.FailureRetryCount, &item.LogLevel, &item.SpeedMaxBytes, &item.PoolPortMin, &item.PoolPortMax,
+		&item.MihomoControllerSecret, &item.FailureRetryCount, &item.LogLevel, &item.SpeedMaxBytes,
 		&item.CreatedAt, &item.UpdatedAt,
 	)
 	if err != nil {
@@ -168,20 +168,6 @@ func validateSettings(item models.Settings) error {
 	}
 	if item.SpeedMaxBytes <= 0 {
 		return errors.New("speed_max_bytes must be greater than zero")
-	}
-	if item.PoolPortMin < 0 || item.PoolPortMax < 0 {
-		return errors.New("pool_port_min and pool_port_max must be zero or greater")
-	}
-	if (item.PoolPortMin == 0) != (item.PoolPortMax == 0) {
-		return errors.New("pool_port_min and pool_port_max must both be zero, or both be set")
-	}
-	if item.PoolPortMin > 0 {
-		if item.PoolPortMin < 1 || item.PoolPortMin > 65535 || item.PoolPortMax < 1 || item.PoolPortMax > 65535 {
-			return errors.New("pool port range must stay between 1 and 65535")
-		}
-		if item.PoolPortMin > item.PoolPortMax {
-			return errors.New("pool_port_min must be less than or equal to pool_port_max")
-		}
 	}
 	return nil
 }
