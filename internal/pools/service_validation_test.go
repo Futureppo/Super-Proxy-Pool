@@ -48,15 +48,6 @@ func TestValidateUpsertRequestRequiresAuthFields(t *testing.T) {
 	if err := settingsSvc.EnsureDefaults(ctx, hash); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-	currentSettings, err := settingsSvc.Get(ctx)
-	if err != nil {
-		t.Fatalf("settingsSvc.Get() error = %v", err)
-	}
-	currentSettings.PoolPortMin = 18080
-	currentSettings.PoolPortMax = 18120
-	if _, _, err := settingsSvc.Update(ctx, currentSettings); err != nil {
-		t.Fatalf("settingsSvc.Update() error = %v", err)
-	}
 
 	broker := events.NewBroker()
 	nodeSvc := nodes.NewService(store, broker)
@@ -72,38 +63,33 @@ func TestValidateUpsertRequestRequiresAuthFields(t *testing.T) {
 	})
 	poolSvc := NewService(store, settingsSvc, nodeSvc, subSvc, mihomoMgr, broker)
 
-	if err := poolSvc.validateUpsertRequest(ctx, 0, UpsertRequest{
-		Name:         "demo",
-		Protocol:     "http",
-		ListenPort:   18080,
-		AuthEnabled:  true,
-		AuthUsername: "",
-	}); err == nil {
-		t.Fatalf("expected auth validation error")
-	}
-
+	// Missing username should fail
 	if err := poolSvc.validateUpsertRequest(ctx, 0, UpsertRequest{
 		Name:               "demo",
-		Protocol:           "http",
-		ListenPort:         18080,
-		AuthEnabled:        true,
-		AuthUsername:       "user",
+		AuthUsername:       "",
 		AuthPasswordSecret: "pass",
-		Enabled:            true,
-		FailoverEnabled:    true,
-	}); err != nil {
-		t.Fatalf("validateUpsertRequest() error = %v", err)
+	}); err == nil {
+		t.Fatalf("expected auth validation error for missing username")
 	}
 
+	// Missing password should fail
 	if err := poolSvc.validateUpsertRequest(ctx, 0, UpsertRequest{
 		Name:               "demo",
-		Protocol:           "http",
-		ListenPort:         18079,
-		AuthEnabled:        false,
-		Enabled:            true,
-		FailoverEnabled:    true,
+		AuthUsername:       "user",
 		AuthPasswordSecret: "",
 	}); err == nil {
-		t.Fatalf("expected pool port range validation error")
+		t.Fatalf("expected auth validation error for missing password")
+	}
+
+	// Valid request should pass
+	if err := poolSvc.validateUpsertRequest(ctx, 0, UpsertRequest{
+		Name:               "demo",
+		AuthUsername:       "user",
+		AuthPasswordSecret: "pass",
+		Strategy:           "round_robin",
+		FailoverEnabled:    true,
+		Enabled:            true,
+	}); err != nil {
+		t.Fatalf("validateUpsertRequest() error = %v", err)
 	}
 }

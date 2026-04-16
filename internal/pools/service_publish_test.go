@@ -74,13 +74,12 @@ func TestServicePublishWritesConfigs(t *testing.T) {
 		t.Fatalf("Create manual node error = %v", err)
 	}
 	pool, err := poolSvc.Create(ctx, UpsertRequest{
-		Name:            "demo-pool",
-		Protocol:        "http",
-		ListenHost:      "0.0.0.0",
-		ListenPort:      18080,
-		Strategy:        "round_robin",
-		FailoverEnabled: true,
-		Enabled:         true,
+		Name:               "demo-pool",
+		AuthUsername:       "testuser",
+		AuthPasswordSecret: "testpass",
+		Strategy:           "round_robin",
+		FailoverEnabled:    true,
+		Enabled:            true,
 	})
 	if err != nil {
 		t.Fatalf("Create pool error = %v", err)
