@@ -12,7 +12,7 @@ func TestValidateSettings(t *testing.T) {
 		PanelHost:                      "0.0.0.0",
 		PanelPort:                      7890,
 		SpeedTestEnabled:               false,
-		LatencyTestURL:                 "https://www.gstatic.com/generate_204",
+		LatencyTestURL:                 "https://cp.cloudflare.com/generate_204",
 		SpeedTestURL:                   "https://speed.cloudflare.com/__down?bytes=5000000",
 		LatencyTimeoutMS:               5000,
 		SpeedTimeoutMS:                 10000,

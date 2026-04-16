@@ -19,7 +19,7 @@
   - Docker：`/data/app.db`
   - Windows 本地开发：`./data/app.db`
 - 默认订阅同步间隔：`3600` 秒
-- 默认延迟测试 URL：`https://www.gstatic.com/generate_204`
+- 默认延迟测试 URL：`https://cp.cloudflare.com/generate_204`
 - 测速：默认关闭
 
 ## 本地开发
