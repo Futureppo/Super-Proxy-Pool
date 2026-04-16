@@ -120,36 +120,69 @@ func (m *Manager) ProbeControllerAddr() string {
 }
 
 func (m *Manager) ApplyProdConfig(payload []byte) error {
-	if err := writeFileAtomic(m.opts.ProdConfigPath, payload); err != nil {
-		return err
-	}
-	if !m.hasBinary {
-		return nil
-	}
-	if err := m.reloadConfig(context.Background(), false, m.opts.ProdConfigPath, payload); err == nil {
-		return nil
-	} else {
-		log.Printf("mihomo prod hot reload failed, falling back to restart: %v", err)
-	}
-	return m.restartProcess(context.Background(), "prod")
+	return m.applySingleConfig(context.Background(), "prod", m.opts.ProdConfigPath, payload)
 }
 
 func (m *Manager) ApplyProbeConfig(payload []byte) error {
-	if err := writeFileAtomic(m.opts.ProbeConfigPath, payload); err != nil {
+	return m.applySingleConfig(context.Background(), "probe", m.opts.ProbeConfigPath, payload)
+}
+
+func (m *Manager) ApplyConfigBundle(prodPayload, probePayload []byte, nextSecret string) error {
+	if err := writeFileAtomic(m.opts.ProdConfigPath, prodPayload); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(m.opts.ProbeConfigPath, probePayload); err != nil {
+		return err
+	}
+	if !m.hasBinary {
+		m.setLastSecret(nextSecret)
+		return nil
+	}
+
+	currentSecret := m.currentSecret()
+	prodErr := m.reloadConfigWithSecret(context.Background(), false, m.opts.ProdConfigPath, prodPayload, currentSecret)
+	probeErr := m.reloadConfigWithSecret(context.Background(), true, m.opts.ProbeConfigPath, probePayload, currentSecret)
+	if prodErr != nil || probeErr != nil {
+		if prodErr != nil {
+			log.Printf("mihomo prod hot reload failed, falling back to restart: %v", prodErr)
+		}
+		if probeErr != nil {
+			log.Printf("mihomo probe hot reload failed, falling back to restart: %v", probeErr)
+		}
+		if err := m.restartProcess(context.Background(), "prod"); err != nil {
+			return err
+		}
+		if err := m.restartProcess(context.Background(), "probe"); err != nil {
+			return err
+		}
+	}
+	if err := m.waitControllerWithSecret(context.Background(), false, nextSecret); err != nil {
+		return err
+	}
+	if err := m.waitControllerWithSecret(context.Background(), true, nextSecret); err != nil {
+		return err
+	}
+	m.setLastSecret(nextSecret)
+	return nil
+}
+
+func (m *Manager) applySingleConfig(ctx context.Context, kind, configPath string, payload []byte) error {
+	if err := writeFileAtomic(configPath, payload); err != nil {
 		return err
 	}
 	if !m.hasBinary {
 		return nil
 	}
-	if err := m.reloadConfig(context.Background(), true, m.opts.ProbeConfigPath, payload); err == nil {
-		return m.waitController(context.Background(), true)
+	probe := kind == "probe"
+	if err := m.reloadConfigWithSecret(ctx, probe, configPath, payload, m.currentSecret()); err == nil {
+		return m.waitControllerWithSecret(ctx, probe, m.currentSecret())
 	} else {
-		log.Printf("mihomo probe hot reload failed, falling back to restart: %v", err)
+		log.Printf("mihomo %s hot reload failed, falling back to restart: %v", kind, err)
 	}
-	if err := m.restartProcess(context.Background(), "probe"); err != nil {
+	if err := m.restartProcess(ctx, kind); err != nil {
 		return err
 	}
-	return m.waitController(context.Background(), true)
+	return m.waitControllerWithSecret(ctx, probe, m.currentSecret())
 }
 
 func (m *Manager) Delay(ctx context.Context, secret, proxyName, targetURL string, timeoutMS int) (int64, error) {
@@ -219,6 +252,10 @@ func (m *Manager) SetGlobalProxy(ctx context.Context, secret, proxyName string) 
 }
 
 func (m *Manager) waitController(ctx context.Context, probe bool) error {
+	return m.waitControllerWithSecret(ctx, probe, m.currentSecret())
+}
+
+func (m *Manager) waitControllerWithSecret(ctx context.Context, probe bool, secret string) error {
 	if !m.hasBinary {
 		return nil
 	}
@@ -229,8 +266,8 @@ func (m *Manager) waitController(ctx context.Context, probe bool) error {
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s/version", addr), nil)
-		if m.lastSecret != "" {
-			req.Header.Set("Authorization", "Bearer "+m.lastSecret)
+		if secret != "" {
+			req.Header.Set("Authorization", "Bearer "+secret)
 		}
 		resp, err := m.httpClient.Do(req)
 		if err == nil {
@@ -316,7 +353,11 @@ func (m *Manager) restartProcess(ctx context.Context, kind string) error {
 }
 
 func (m *Manager) reloadConfig(ctx context.Context, probe bool, configPath string, payload []byte) error {
-	if err := m.waitController(ctx, probe); err != nil {
+	return m.reloadConfigWithSecret(ctx, probe, configPath, payload, m.currentSecret())
+}
+
+func (m *Manager) reloadConfigWithSecret(ctx context.Context, probe bool, configPath string, payload []byte, secret string) error {
+	if err := m.waitControllerWithSecret(ctx, probe, secret); err != nil {
 		return err
 	}
 	controllerAddr := m.opts.ProdControllerAddr
@@ -336,8 +377,8 @@ func (m *Manager) reloadConfig(ctx context.Context, probe bool, configPath strin
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if m.lastSecret != "" {
-		req.Header.Set("Authorization", "Bearer "+m.lastSecret)
+	if secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
 	}
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
@@ -349,6 +390,18 @@ func (m *Manager) reloadConfig(ctx context.Context, probe bool, configPath strin
 		return fmt.Errorf("config reload failed: %s", strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+func (m *Manager) currentSecret() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastSecret
+}
+
+func (m *Manager) setLastSecret(secret string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastSecret = secret
 }
 
 func (m *Manager) waitProcess(kind string, cmd *exec.Cmd) {

@@ -265,11 +265,7 @@ func (s *Service) Publish(ctx context.Context, poolID int64) error {
 		s.markPublishFailure(ctx, err)
 		return err
 	}
-	if err := s.mihomo.ApplyProdConfig(bundle.ProdConfig); err != nil {
-		s.markPublishFailure(ctx, err)
-		return err
-	}
-	if err := s.mihomo.ApplyProbeConfig(bundle.ProbeConfig); err != nil {
+	if err := s.mihomo.ApplyConfigBundle(bundle.ProdConfig, bundle.ProbeConfig, settingsRow.MihomoControllerSecret); err != nil {
 		s.markPublishFailure(ctx, err)
 		return err
 	}
