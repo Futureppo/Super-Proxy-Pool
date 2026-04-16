@@ -98,15 +98,17 @@ func buildProdConfig(secret, controller, testURL, logLevel string, poolList []mo
 		}
 		groupType, strategy := strategyToMihomo(pool.Strategy)
 		group := map[string]any{
-			"name":     groupName,
-			"type":     groupType,
-			"proxies":  memberNames,
-			"url":      testURL,
-			"interval": 300,
-			"lazy":     true,
+			"name":    groupName,
+			"type":    groupType,
+			"proxies": memberNames,
 		}
 		if strategy != "" {
 			group["strategy"] = strategy
+		}
+		if shouldAttachHealthCheck(pool) {
+			group["url"] = testURL
+			group["interval"] = 300
+			group["lazy"] = true
 		}
 		root["proxy-groups"] = append(root["proxy-groups"].([]map[string]any), group)
 
@@ -240,5 +242,16 @@ func normalizeLogLevel(level string) string {
 		return strings.ToLower(strings.TrimSpace(level))
 	default:
 		return "info"
+	}
+}
+
+func shouldAttachHealthCheck(pool models.ProxyPool) bool {
+	switch pool.Strategy {
+	case "failover", "lowest_latency":
+		return true
+	case "sticky", "round_robin", "":
+		return pool.FailoverEnabled
+	default:
+		return pool.FailoverEnabled
 	}
 }
