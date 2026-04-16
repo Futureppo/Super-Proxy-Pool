@@ -252,75 +252,96 @@
       <article class="panel-card form-card">
         <h2>系统设置</h2>
         <form id="settingsForm" class="stack-form">
-          <label>
-            <span>面板监听地址</span>
-            <input name="panel_host" required>
-          </label>
-          <label>
-            <span>面板监听端口</span>
-            <input type="number" name="panel_port" min="1" max="65535" required>
-          </label>
-          <label class="inline">
-            <input type="checkbox" name="speed_test_enabled">
-            <span>开启测速显示</span>
-          </label>
-          <label>
-            <span>延迟测试 URL</span>
-            <input name="latency_test_url" required>
-          </label>
-          <label>
-            <span>延迟测试超时（毫秒）</span>
-            <input type="number" name="latency_timeout_ms" min="1" required>
-          </label>
-          <label>
-            <span>延迟测试并发</span>
-            <input type="number" name="latency_concurrency" min="1" required>
-          </label>
-          <label>
-            <span>测速下载 URL</span>
-            <input name="speed_test_url" required>
-          </label>
-          <label>
-            <span>测速超时（毫秒）</span>
-            <input type="number" name="speed_timeout_ms" min="1" required>
-          </label>
-          <label>
-            <span>测速并发</span>
-            <input type="number" name="speed_concurrency" min="1" max="4" required>
-          </label>
-          <label>
-            <span>测速字节上限</span>
-            <input type="number" name="speed_max_bytes" min="1" required>
-          </label>
-          <label>
-            <span>默认订阅同步间隔（秒）</span>
-            <input type="number" name="default_subscription_interval_sec" min="0" required>
-          </label>
-          <label>
-            <span>Mihomo Controller Secret</span>
-            <input name="mihomo_controller_secret" required>
-          </label>
-          <label>
-            <span>失败重试次数</span>
-            <input type="number" name="failure_retry_count" min="0" required>
-          </label>
-          <label>
-            <span>日志级别</span>
-            <select name="log_level">
-              <option value="debug">debug</option>
-              <option value="info">info</option>
-              <option value="warning">warning</option>
-              <option value="error">error</option>
-            </select>
-          </label>
-          <label>
-            <span>代理池端口范围最小值</span>
-            <input type="number" name="pool_port_min" min="0" max="65535" placeholder="0 表示不限制">
-          </label>
-          <label>
-            <span>代理池端口范围最大值</span>
-            <input type="number" name="pool_port_max" min="0" max="65535" placeholder="0 表示不限制">
-          </label>
+          <section class="settings-section">
+            <header class="settings-section-head">
+              <h3>面板设置</h3>
+              <p>管理面板监听地址与端口。此分组保存后通常需要重启系统才会完全生效。</p>
+            </header>
+            <label>
+              <span>面板监听地址</span>
+              <input name="panel_host" required>
+            </label>
+            <label>
+              <span>面板监听端口</span>
+              <input type="number" name="panel_port" min="1" max="65535" required>
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head">
+              <h3>测试设置</h3>
+              <p>控制延迟测试与下载测速参数。测速并发当前固定支持 1 到 4 个受控槽位。</p>
+            </header>
+            <label class="inline">
+              <input type="checkbox" name="speed_test_enabled">
+              <span>开启测速显示</span>
+            </label>
+            <label>
+              <span>延迟测试 URL</span>
+              <input name="latency_test_url" required>
+            </label>
+            <label>
+              <span>延迟测试超时（毫秒）</span>
+              <input type="number" name="latency_timeout_ms" min="1" required>
+            </label>
+            <label>
+              <span>延迟测试并发</span>
+              <input type="number" name="latency_concurrency" min="1" required>
+            </label>
+            <label>
+              <span>测速下载 URL</span>
+              <input name="speed_test_url" required>
+            </label>
+            <label>
+              <span>测速超时（毫秒）</span>
+              <input type="number" name="speed_timeout_ms" min="1" required>
+            </label>
+            <label>
+              <span>测速并发</span>
+              <input type="number" name="speed_concurrency" min="1" max="4" required>
+            </label>
+            <label>
+              <span>测速字节上限</span>
+              <input type="number" name="speed_max_bytes" min="1" required>
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head">
+              <h3>内核 / 运行设置</h3>
+              <p>影响 Mihomo controller、订阅调度、失败重试与日志输出的运行参数。</p>
+            </header>
+            <label>
+              <span>默认订阅同步间隔（秒）</span>
+              <input type="number" name="default_subscription_interval_sec" min="0" required>
+            </label>
+            <label>
+              <span>Mihomo Controller Secret</span>
+              <input name="mihomo_controller_secret" required>
+            </label>
+            <label>
+              <span>失败重试次数</span>
+              <input type="number" name="failure_retry_count" min="0" required>
+            </label>
+            <label>
+              <span>日志级别</span>
+              <select name="log_level">
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warning">warning</option>
+                <option value="error">error</option>
+              </select>
+            </label>
+            <label>
+              <span>代理池端口范围最小值</span>
+              <input type="number" name="pool_port_min" min="0" max="65535" placeholder="0 表示不限制">
+            </label>
+            <label>
+              <span>代理池端口范围最大值</span>
+              <input type="number" name="pool_port_max" min="0" max="65535" placeholder="0 表示不限制">
+            </label>
+          </section>
+
           <div class="form-actions">
             <button type="submit" data-loading-text="保存中...">保存设置</button>
           </div>

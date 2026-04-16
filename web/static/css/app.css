@@ -321,6 +321,30 @@ textarea { resize: vertical; }
   border-top: 1px dashed var(--border);
 }
 
+.settings-section {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #fbfcff;
+}
+
+.settings-section + .settings-section {
+  margin-top: 4px;
+}
+
+.settings-section-head h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.settings-section-head p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .feedback-panel {
   margin: 14px 0;
   padding: 12px 14px;
