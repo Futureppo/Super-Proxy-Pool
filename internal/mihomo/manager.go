@@ -119,15 +119,15 @@ func (m *Manager) ProbeControllerAddr() string {
 	return m.opts.ProbeControllerAddr
 }
 
-func (m *Manager) ApplyProdConfig(payload []byte) error {
-	return m.applySingleConfig(context.Background(), "prod", m.opts.ProdConfigPath, payload)
+func (m *Manager) ApplyProdConfig(ctx context.Context, payload []byte) error {
+	return m.applySingleConfig(ctx, "prod", m.opts.ProdConfigPath, payload)
 }
 
-func (m *Manager) ApplyProbeConfig(payload []byte) error {
-	return m.applySingleConfig(context.Background(), "probe", m.opts.ProbeConfigPath, payload)
+func (m *Manager) ApplyProbeConfig(ctx context.Context, payload []byte) error {
+	return m.applySingleConfig(ctx, "probe", m.opts.ProbeConfigPath, payload)
 }
 
-func (m *Manager) ApplyConfigBundle(prodPayload, probePayload []byte, nextSecret string) error {
+func (m *Manager) ApplyConfigBundle(ctx context.Context, prodPayload, probePayload []byte, nextSecret string) error {
 	if err := writeFileAtomic(m.opts.ProdConfigPath, prodPayload); err != nil {
 		return err
 	}
@@ -140,8 +140,8 @@ func (m *Manager) ApplyConfigBundle(prodPayload, probePayload []byte, nextSecret
 	}
 
 	currentSecret := m.currentSecret()
-	prodErr := m.reloadConfigWithSecret(context.Background(), false, m.opts.ProdConfigPath, prodPayload, currentSecret)
-	probeErr := m.reloadConfigWithSecret(context.Background(), true, m.opts.ProbeConfigPath, probePayload, currentSecret)
+	prodErr := m.reloadConfigWithSecret(ctx, false, m.opts.ProdConfigPath, prodPayload, currentSecret)
+	probeErr := m.reloadConfigWithSecret(ctx, true, m.opts.ProbeConfigPath, probePayload, currentSecret)
 	if prodErr != nil || probeErr != nil {
 		if prodErr != nil {
 			log.Printf("mihomo prod hot reload failed, falling back to restart: %v", prodErr)
@@ -149,17 +149,17 @@ func (m *Manager) ApplyConfigBundle(prodPayload, probePayload []byte, nextSecret
 		if probeErr != nil {
 			log.Printf("mihomo probe hot reload failed, falling back to restart: %v", probeErr)
 		}
-		if err := m.restartProcess(context.Background(), "prod"); err != nil {
+		if err := m.restartProcess(ctx, "prod"); err != nil {
 			return err
 		}
-		if err := m.restartProcess(context.Background(), "probe"); err != nil {
+		if err := m.restartProcess(ctx, "probe"); err != nil {
 			return err
 		}
 	}
-	if err := m.waitControllerWithSecret(context.Background(), false, nextSecret); err != nil {
+	if err := m.waitControllerWithSecret(ctx, false, nextSecret); err != nil {
 		return err
 	}
-	if err := m.waitControllerWithSecret(context.Background(), true, nextSecret); err != nil {
+	if err := m.waitControllerWithSecret(ctx, true, nextSecret); err != nil {
 		return err
 	}
 	m.setLastSecret(nextSecret)

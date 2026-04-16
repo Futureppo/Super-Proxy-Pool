@@ -156,31 +156,12 @@
             <input name="name" required autocomplete="off">
           </label>
           <label>
-            <span>协议</span>
-            <select name="protocol">
-              <option value="http">HTTP</option>
-              <option value="socks">SOCKS</option>
-            </select>
-          </label>
-          <label>
-            <span>监听地址</span>
-            <input name="listen_host" value="0.0.0.0" autocomplete="off">
-          </label>
-          <label>
-            <span>监听端口</span>
-            <input type="number" name="listen_port" min="1" max="65535" required>
-          </label>
-          <label class="inline">
-            <input type="checkbox" name="auth_enabled">
-            <span>启用认证</span>
-          </label>
-          <label>
-            <span>用户名</span>
-            <input name="auth_username" autocomplete="off" placeholder="启用认证后必填">
+            <span>用户名（唯一标识此代理池）</span>
+            <input name="auth_username" required autocomplete="off" placeholder="用于区分不同代理池">
           </label>
           <label>
             <span>密码</span>
-            <input name="auth_password_secret" type="password" autocomplete="new-password" placeholder="启用认证后必填">
+            <input name="auth_password_secret" type="password" required autocomplete="new-password">
           </label>
           <label>
             <span>调度策略</span>
@@ -270,7 +251,7 @@
           <section class="settings-section">
             <header class="settings-section-head">
               <h3>测试设置</h3>
-              <p>控制延迟测试与下载测速参数。测速并发当前固定支持 1 到 4 个受控槽位。</p>
+              <p>控制延迟测试与下载测速参数。测速并发当前固定支持 1 到 {{.MaxProbeSpeedSlots}} 个受控槽位。</p>
             </header>
             <label class="inline">
               <input type="checkbox" name="speed_test_enabled">
@@ -298,7 +279,7 @@
             </label>
             <label>
               <span>测速并发</span>
-              <input type="number" name="speed_concurrency" min="1" max="4" required>
+              <input type="number" name="speed_concurrency" min="1" max="{{.MaxProbeSpeedSlots}}" required>
             </label>
             <label>
               <span>测速字节上限</span>
@@ -331,14 +312,6 @@
                 <option value="warning">warning</option>
                 <option value="error">error</option>
               </select>
-            </label>
-            <label>
-              <span>代理池端口范围最小值</span>
-              <input type="number" name="pool_port_min" min="0" max="65535" placeholder="0 表示不限制">
-            </label>
-            <label>
-              <span>代理池端口范围最大值</span>
-              <input type="number" name="pool_port_max" min="0" max="65535" placeholder="0 表示不限制">
             </label>
           </section>
 

@@ -12,12 +12,8 @@ func TestBuildPublishBundle(t *testing.T) {
 		{
 			ID:                 1,
 			Name:               "demo",
-			Protocol:           "http",
-			ListenHost:         "0.0.0.0",
-			ListenPort:         18080,
 			Strategy:           "round_robin",
 			Enabled:            true,
-			AuthEnabled:        true,
 			AuthUsername:       "user",
 			AuthPasswordSecret: "pass",
 		},
@@ -52,6 +48,9 @@ func TestBuildPublishBundle(t *testing.T) {
 	probe := string(bundle.ProbeConfig)
 	if !strings.Contains(prod, "listeners:") || !strings.Contains(prod, "pool-group-1") || !strings.Contains(prod, "round-robin") || !strings.Contains(prod, "log-level: debug") {
 		t.Fatalf("unexpected prod config:\n%s", prod)
+	}
+	if !strings.Contains(prod, "listen: 127.0.0.1") || !strings.Contains(prod, "port: 30001") || !strings.Contains(prod, "type: mixed") {
+		t.Fatalf("expected internal mixed listener in prod config:\n%s", prod)
 	}
 	if !strings.Contains(prod, "username: user") || !strings.Contains(prod, "password: pass") {
 		t.Fatalf("expected listener auth in prod config:\n%s", prod)
@@ -89,9 +88,6 @@ func TestBuildPublishBundleRespectsFailoverToggleForLoadBalance(t *testing.T) {
 		[]models.ProxyPool{{
 			ID:              1,
 			Name:            "with-failover",
-			Protocol:        "http",
-			ListenHost:      "0.0.0.0",
-			ListenPort:      18080,
 			Strategy:        "round_robin",
 			FailoverEnabled: true,
 			Enabled:         true,
@@ -113,9 +109,6 @@ func TestBuildPublishBundleRespectsFailoverToggleForLoadBalance(t *testing.T) {
 		[]models.ProxyPool{{
 			ID:              2,
 			Name:            "without-failover",
-			Protocol:        "http",
-			ListenHost:      "0.0.0.0",
-			ListenPort:      18081,
 			Strategy:        "round_robin",
 			FailoverEnabled: false,
 			Enabled:         true,

@@ -1,6 +1,7 @@
 package mihomo
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -76,7 +77,7 @@ func TestApplyConfigBundleRotatesControllerSecret(t *testing.T) {
 	prodPayload := []byte("secret: \"" + newSecret + "\"\nmode: rule\n")
 	probePayload := []byte("secret: \"" + newSecret + "\"\nmode: global\n")
 
-	if err := manager.ApplyConfigBundle(prodPayload, probePayload, newSecret); err != nil {
+	if err := manager.ApplyConfigBundle(context.Background(), prodPayload, probePayload, newSecret); err != nil {
 		t.Fatalf("ApplyConfigBundle() error = %v", err)
 	}
 	if got := manager.currentSecret(); got != newSecret {

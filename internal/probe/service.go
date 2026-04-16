@@ -31,15 +31,17 @@ type Service struct {
 	mihomo        *mihomo.Manager
 	events        *events.Broker
 
-	latencyQueue chan task
-	speedQueue   chan task
-	speedSlots   chan int
+	latencyQueue  chan task
+	speedQueue    chan task
+	speedSlots    chan int
+	probeConfigMu sync.Mutex
 
 	activeLatency            int32
 	activeSpeed              int32
 	backgroundLatencyRunning int32
 	backgroundSpeedRunning   int32
 	startOnce                sync.Once
+	speedSlotSelections      map[int]string
 }
 
 type task struct {
@@ -54,16 +56,17 @@ func NewService(settingsSvc *settings.Service, store *db.Store, manualNodes *nod
 		speedSlots <- slotIndex
 	}
 	return &Service{
-		settingsSvc:   settingsSvc,
-		store:         store,
-		manualNodes:   manualNodes,
-		subscriptions: subscriptions,
-		pools:         poolSvc,
-		mihomo:        mihomoMgr,
-		events:        broker,
-		latencyQueue:  make(chan task, 512),
-		speedQueue:    make(chan task, 128),
-		speedSlots:    speedSlots,
+		settingsSvc:         settingsSvc,
+		store:               store,
+		manualNodes:         manualNodes,
+		subscriptions:       subscriptions,
+		pools:               poolSvc,
+		mihomo:              mihomoMgr,
+		events:              broker,
+		latencyQueue:        make(chan task, 512),
+		speedQueue:          make(chan task, 128),
+		speedSlots:          speedSlots,
+		speedSlotSelections: make(map[int]string),
 	}
 }
 
@@ -279,7 +282,7 @@ func (s *Service) runLatency(ctx context.Context, item task) {
 	if err != nil {
 		return
 	}
-	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret, settingsRow.LogLevel)
+	node, err := s.syncProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret, settingsRow.LogLevel, -1)
 	if err != nil {
 		_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "unavailable", err.Error())
 		return
@@ -310,7 +313,8 @@ func (s *Service) runSpeed(ctx context.Context, item task) {
 		return
 	}
 	defer s.releaseSpeedSlot(slotIndex)
-	node, err := s.refreshProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret, settingsRow.LogLevel)
+	defer s.clearSpeedSlotSelection(slotIndex)
+	_, err = s.syncProbeInventoryAndGetNode(ctx, item.SourceType, item.SourceNodeID, settingsRow.MihomoControllerSecret, settingsRow.LogLevel, slotIndex)
 	if err != nil {
 		_ = s.setStatus(ctx, item.SourceType, item.SourceNodeID, "unavailable", err.Error())
 		return
@@ -320,11 +324,6 @@ func (s *Service) runSpeed(ctx context.Context, item task) {
 	taskCtx, cancel := context.WithTimeout(ctx, time.Duration(settingsRow.SpeedTimeoutMS+3000)*time.Millisecond)
 	defer cancel()
 
-	if err := s.mihomo.SetProxySelection(taskCtx, settingsRow.MihomoControllerSecret, pools.ProbeSpeedSlotGroupName(slotIndex), runtimeNodeName(node)); err != nil {
-		_ = s.updateResult(ctx, item, nil, nil, "unavailable", err.Error(), true)
-		s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "speed", "success": false, "error": err.Error()})
-		return
-	}
 	speedMbps, err := s.measureDownloadSpeed(taskCtx, slotIndex, settingsRow.SpeedTestURL, settingsRow.SpeedMaxBytes)
 	if err != nil {
 		_ = s.updateResult(ctx, item, nil, nil, "unavailable", err.Error(), true)
@@ -335,7 +334,7 @@ func (s *Service) runSpeed(ctx context.Context, item task) {
 	s.events.Publish("probe.finished", map[string]any{"source_type": item.SourceType, "source_node_id": item.SourceNodeID, "test_type": "speed", "success": true, "speed_mbps": speedMbps})
 }
 
-func (s *Service) refreshProbeInventoryAndGetNode(ctx context.Context, sourceType string, sourceNodeID int64, secret, logLevel string) (models.RuntimeNode, error) {
+func (s *Service) syncProbeInventoryAndGetNode(ctx context.Context, sourceType string, sourceNodeID int64, secret, logLevel string, slotIndex int) (models.RuntimeNode, error) {
 	manualInventory, err := s.manualNodes.AllRuntimeNodes(ctx)
 	if err != nil {
 		return models.RuntimeNode{}, err
@@ -345,17 +344,55 @@ func (s *Service) refreshProbeInventoryAndGetNode(ctx context.Context, sourceTyp
 		return models.RuntimeNode{}, err
 	}
 	inventory := append(manualInventory, subscriptionInventory...)
-	cfg, err := pools.BuildProbeInventoryConfig(secret, s.mihomo.ProbeControllerAddr(), s.mihomo.ProbeMixedPort(), logLevel, inventory)
+	node, err := s.lookupRuntimeNode(ctx, sourceType, sourceNodeID)
 	if err != nil {
 		return models.RuntimeNode{}, err
 	}
-	if err := s.mihomo.ApplyProbeConfig(cfg); err != nil {
+
+	s.probeConfigMu.Lock()
+	defer s.probeConfigMu.Unlock()
+
+	if slotIndex >= 0 {
+		s.speedSlotSelections[slotIndex] = runtimeNodeName(node)
+	}
+	if err := s.applyProbeInventory(ctx, secret, logLevel, inventory); err != nil {
+		if slotIndex >= 0 {
+			delete(s.speedSlotSelections, slotIndex)
+		}
 		return models.RuntimeNode{}, err
 	}
+	return node, nil
+}
+
+func (s *Service) lookupRuntimeNode(ctx context.Context, sourceType string, sourceNodeID int64) (models.RuntimeNode, error) {
 	if sourceType == "manual" {
 		return s.manualNodes.NodeBySource(ctx, sourceNodeID)
 	}
 	return s.subscriptions.NodeBySource(ctx, sourceNodeID)
+}
+
+func (s *Service) applyProbeInventory(ctx context.Context, secret, logLevel string, inventory []models.RuntimeNode) error {
+	cfg, err := pools.BuildProbeInventoryConfig(secret, s.mihomo.ProbeControllerAddr(), s.mihomo.ProbeMixedPort(), logLevel, inventory)
+	if err != nil {
+		return err
+	}
+	if err := s.mihomo.ApplyProbeConfig(ctx, cfg); err != nil {
+		return err
+	}
+	return s.reapplySpeedSlotSelections(ctx, secret)
+}
+
+func (s *Service) reapplySpeedSlotSelections(ctx context.Context, secret string) error {
+	for slotIndex := 0; slotIndex < pools.MaxProbeSpeedSlots; slotIndex++ {
+		proxyName, ok := s.speedSlotSelections[slotIndex]
+		if !ok || proxyName == "" {
+			continue
+		}
+		if err := s.mihomo.SetProxySelection(ctx, secret, pools.ProbeSpeedSlotGroupName(slotIndex), proxyName); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) measureDownloadSpeed(ctx context.Context, slotIndex int, targetURL string, maxBytes int64) (float64, error) {
@@ -434,6 +471,12 @@ func (s *Service) releaseSpeedSlot(slotIndex int) {
 	case s.speedSlots <- slotIndex:
 	default:
 	}
+}
+
+func (s *Service) clearSpeedSlotSelection(slotIndex int) {
+	s.probeConfigMu.Lock()
+	defer s.probeConfigMu.Unlock()
+	delete(s.speedSlotSelections, slotIndex)
 }
 
 func boolToInt(v bool) int {

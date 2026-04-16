@@ -694,8 +694,6 @@ async function savePool(event) {
   setButtonLoading(button, true);
 
   const payload = formToJSON(form);
-  payload.listen_port = Number(payload.listen_port);
-  payload.auth_enabled = Boolean(form.elements.namedItem("auth_enabled").checked);
   payload.failover_enabled = Boolean(form.elements.namedItem("failover_enabled").checked);
   payload.enabled = Boolean(form.elements.namedItem("enabled").checked);
   payload.members = getSelectedMembers();
@@ -737,26 +735,24 @@ function renderPools() {
         </div>
       </div>
       <div class="entity-meta muted">
-        <span>${escapeHTML(String(item.protocol || "").toUpperCase())}</span>
-        <span>${escapeHTML(item.listen_host)}:${escapeHTML(item.listen_port)}</span>
-        <span>${escapeHTML(item.strategy || "-")}</span>
+        <span>用户名：${escapeHTML(item.auth_username || "-")}</span>
+        <span>策略：${escapeHTML(item.strategy || "-")}</span>
       </div>
       <div class="entity-metrics">
         <span>运行状态：${item.enabled ? "运行中" : "已停用"}</span>
         <span>发布状态：${publishStatusText(item.last_publish_status)}</span>
         <span>成员数：${item.current_member_count ?? 0}</span>
         <span>健康数：${item.current_healthy_count ?? 0}</span>
-        <span>认证：${item.auth_enabled ? "已开启" : "已关闭"}</span>
         <span>最近发布：${formatTime(item.last_published_at)}</span>
       </div>
       ${item.last_error ? `<div class="entity-notice error-copy">最近错误：${escapeHTML(item.last_error)}</div>` : ""}
       <div class="entity-meta muted pool-connection">
-        <span>连接：<code>${escapeHTML(poolConnectAddress(item))}</code></span>
-        ${item.auth_enabled ? `<span>用户名：<code>${escapeHTML(item.auth_username || "-")}</code></span>` : ""}
-        ${item.auth_enabled ? `<span>密码：<code data-role="pool-password" data-secret="${escapeHTML(item.auth_password_secret || "")}">******</code></span>` : ""}
+        <span>SOCKS5：<code>socks5://${escapeHTML(item.auth_username || "")}:******@服务器IP:${escapeHTML(String(state.settings?.panel_port || 7890))}</code></span>
+        <span>HTTP：<code>http://${escapeHTML(item.auth_username || "")}:******@服务器IP:${escapeHTML(String(state.settings?.panel_port || 7890))}</code></span>
+        <span>密码：<code data-role="pool-password" data-secret="${escapeHTML(item.auth_password_secret || "")}">******</code></span>
       </div>
       <div class="entity-actions">
-        ${item.auth_enabled ? `<button type="button" class="secondary" data-action="toggle-secret" data-id="${item.id}">显示密码</button>` : ""}
+        <button type="button" class="secondary" data-action="toggle-secret" data-id="${item.id}">显示密码</button>
         <button type="button" class="secondary" data-action="copy" data-id="${item.id}">复制连接信息</button>
         <button type="button" class="secondary" data-action="edit" data-id="${item.id}">编辑</button>
         <button type="button" class="secondary" data-action="toggle" data-id="${item.id}" data-loading-text="切换中...">${item.enabled ? "禁用" : "启用"}</button>
@@ -791,7 +787,6 @@ async function onPoolAction(event) {
     }
     if (action === "edit") {
       fillForm($("#poolForm"), item);
-      $("#poolForm").elements.namedItem("auth_enabled").checked = Boolean(item.auth_enabled);
       $("#poolForm").elements.namedItem("failover_enabled").checked = Boolean(item.failover_enabled);
       $("#poolForm").elements.namedItem("enabled").checked = Boolean(item.enabled);
       const memberState = await api(`/api/pools/${id}/members`);
@@ -906,8 +901,7 @@ async function saveSettings(event) {
   payload.speed_max_bytes = Number(payload.speed_max_bytes);
   payload.default_subscription_interval_sec = Number(payload.default_subscription_interval_sec);
   payload.failure_retry_count = Number(payload.failure_retry_count);
-  payload.pool_port_min = Number(payload.pool_port_min || 0);
-  payload.pool_port_max = Number(payload.pool_port_max || 0);
+
 
   try {
     const result = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
@@ -996,8 +990,6 @@ function resetForm(form) {
 function resetPoolForm() {
   const form = $("#poolForm");
   resetForm(form);
-  form.elements.namedItem("listen_host").value = "0.0.0.0";
-  form.elements.namedItem("protocol").value = "http";
   form.elements.namedItem("strategy").value = "round_robin";
   form.elements.namedItem("failover_enabled").checked = true;
   form.elements.namedItem("enabled").checked = true;
@@ -1137,17 +1129,11 @@ function badgeHTML(text, type = "") {
   return `<span class="${className}">${text}</span>`;
 }
 
-function poolConnectAddress(item) {
-  return `${item.protocol}://${item.listen_host}:${item.listen_port}`;
-}
-
 function poolConnectionString(item) {
-  if (!item.auth_enabled) {
-    return poolConnectAddress(item);
-  }
+  const port = state.settings?.panel_port || 7890;
   const username = encodeURIComponent(item.auth_username || "");
   const password = encodeURIComponent(item.auth_password_secret || "");
-  return `${item.protocol}://${username}:${password}@${item.listen_host}:${item.listen_port}`;
+  return `socks5://${username}:${password}@服务器IP:${port}`;
 }
 
 function bindActionButtons(container, handler) {

@@ -13,12 +13,13 @@ import (
 const (
 	defaultPanelHost                     = "0.0.0.0"
 	defaultPanelPort                     = 7890
-	defaultLatencyURL                    = "https://www.gstatic.com/generate_204"
+	defaultLatencyURL                    = "https://cp.cloudflare.com/generate_204"
 	defaultLatencyTimeoutMS              = 5000
 	defaultLatencyConcurrency            = 32
 	defaultSpeedURL                      = "https://speed.cloudflare.com/__down?bytes=5000000"
 	defaultSpeedTimeoutMS                = 10000
 	defaultSpeedConcurrency              = 1
+	MaxProbeSpeedSlots                   = 4
 	defaultSubscriptionIntervalSec       = 3600
 	defaultProbeControllerAddr           = "127.0.0.1:19091"
 	defaultProdControllerAddr            = "127.0.0.1:19090"

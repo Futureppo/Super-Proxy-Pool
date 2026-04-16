@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"super-proxy-pool/internal/auth"
+	"super-proxy-pool/internal/config"
 	"super-proxy-pool/internal/events"
 	"super-proxy-pool/internal/models"
 	"super-proxy-pool/internal/nodes"
@@ -37,11 +38,12 @@ type App struct {
 }
 
 type PageData struct {
-	Title          string
-	Page           string
-	Heading        string
-	Description    string
-	SubscriptionID int64
+	Title              string
+	Page               string
+	Heading            string
+	Description        string
+	SubscriptionID     int64
+	MaxProbeSpeedSlots int
 }
 
 type apiResponse struct {
@@ -201,11 +203,12 @@ func (a *App) renderPage(meta pageMeta) http.HandlerFunc {
 			subscriptionID = parseIDParam(r, "id")
 		}
 		_ = a.appTmpl.ExecuteTemplate(w, "base", PageData{
-			Title:          meta.Heading + " - Super-Proxy-Pool",
-			Page:           meta.Page,
-			Heading:        meta.Heading,
-			Description:    meta.Description,
-			SubscriptionID: subscriptionID,
+			Title:              meta.Heading + " - Super-Proxy-Pool",
+			Page:               meta.Page,
+			Heading:            meta.Heading,
+			Description:        meta.Description,
+			SubscriptionID:     subscriptionID,
+			MaxProbeSpeedSlots: config.MaxProbeSpeedSlots,
 		})
 	}
 }

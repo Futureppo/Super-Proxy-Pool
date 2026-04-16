@@ -120,10 +120,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS proxy_pools (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
-			protocol TEXT NOT NULL,
-			listen_host TEXT NOT NULL,
-			listen_port INTEGER NOT NULL,
-			auth_enabled INTEGER NOT NULL DEFAULT 0,
 			auth_username TEXT NOT NULL DEFAULT '',
 			auth_password_secret TEXT NOT NULL DEFAULT '',
 			strategy TEXT NOT NULL,
@@ -135,7 +131,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL
 		);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_pools_listen_port ON proxy_pools(listen_port);`,
 		`CREATE TABLE IF NOT EXISTS proxy_pool_members (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			pool_id INTEGER NOT NULL,
@@ -173,7 +168,77 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "settings", "pool_port_max", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// Ensure auth_username column exists for upgraded databases
+	if err := s.ensureColumn(ctx, "proxy_pools", "auth_username", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "proxy_pools", "auth_password_secret", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// Migrate legacy proxy_pools table: drop old columns by recreating the table
+	if err := s.migrateProxyPoolsDropLegacy(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+// migrateProxyPoolsDropLegacy drops legacy columns (protocol, listen_host, listen_port, auth_enabled)
+// from the proxy_pools table if they still exist. Uses SQLite table recreation pattern.
+func (s *Store) migrateProxyPoolsDropLegacy(ctx context.Context) error {
+	if !s.hasColumn(ctx, "proxy_pools", "listen_port") {
+		return nil // already migrated
+	}
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS proxy_pools_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			auth_username TEXT NOT NULL DEFAULT '',
+			auth_password_secret TEXT NOT NULL DEFAULT '',
+			strategy TEXT NOT NULL,
+			failover_enabled INTEGER NOT NULL DEFAULT 1,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			last_published_at TIMESTAMP NULL,
+			last_publish_status TEXT NOT NULL DEFAULT '',
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
+		`INSERT INTO proxy_pools_new (id, name, auth_username, auth_password_secret, strategy,
+			failover_enabled, enabled, last_published_at, last_publish_status, last_error, created_at, updated_at)
+		SELECT id, name, auth_username, auth_password_secret, strategy,
+			failover_enabled, enabled, last_published_at, last_publish_status, last_error, created_at, updated_at
+		FROM proxy_pools`,
+		`DROP INDEX IF EXISTS idx_proxy_pools_listen_port`,
+		`DROP TABLE proxy_pools`,
+		`ALTER TABLE proxy_pools_new RENAME TO proxy_pools`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.DB.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("proxy_pools migration: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) hasColumn(ctx context.Context, table, column string) bool {
+	rows, err := s.DB.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return false
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
