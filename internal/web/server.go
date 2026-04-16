@@ -349,7 +349,9 @@ func (a *App) handleSubscriptionSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	a.publishRuntimeAsync()
+	if item.Modified {
+		a.publishRuntimeAsync()
+	}
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
 }
 

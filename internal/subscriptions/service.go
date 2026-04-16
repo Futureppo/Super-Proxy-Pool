@@ -39,6 +39,8 @@ type UpsertRequest struct {
 }
 
 type SyncOutcome struct {
+	Status       string   `json:"status"`
+	Modified     bool     `json:"modified"`
 	CreatedCount int      `json:"created_count"`
 	FailedCount  int      `json:"failed_count"`
 	Errors       []string `json:"errors"`
@@ -232,6 +234,21 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 		return SyncOutcome{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		now := time.Now().UTC()
+		if err := s.setSyncNotModified(ctx, sub.ID, now); err != nil {
+			return SyncOutcome{}, err
+		}
+		outcome := SyncOutcome{
+			Status:       "not_modified",
+			Modified:     false,
+			CreatedCount: 0,
+			FailedCount:  0,
+			Errors:       nil,
+		}
+		s.events.Publish("subscriptions.synced", map[string]any{"subscription_id": id, "outcome": outcome})
+		return outcome, nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := fmt.Errorf("subscription fetch failed: %s", resp.Status)
 		_ = s.setSyncFailure(ctx, sub.ID, err.Error())
@@ -282,6 +299,8 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 		return SyncOutcome{}, err
 	}
 	outcome := SyncOutcome{
+		Status:       "ok",
+		Modified:     true,
 		CreatedCount: len(result.Nodes),
 		FailedCount:  len(result.Errors),
 		Errors:       stringifyErrors(result.Errors),
@@ -365,6 +384,15 @@ func (s *Service) SetTransientStatus(ctx context.Context, sourceNodeID int64, st
 func (s *Service) setSyncFailure(ctx context.Context, id int64, message string) error {
 	_, err := s.store.DB.ExecContext(ctx, `UPDATE subscriptions SET last_sync_status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
 		"failed", message, time.Now().UTC(), id)
+	return err
+}
+
+func (s *Service) setSyncNotModified(ctx context.Context, id int64, syncedAt time.Time) error {
+	_, err := s.store.DB.ExecContext(ctx, `UPDATE subscriptions
+		SET last_sync_at = ?, last_sync_status = ?, last_error = ?, updated_at = ?
+		WHERE id = ?`,
+		syncedAt, "not_modified", "", syncedAt, id,
+	)
 	return err
 }
 
