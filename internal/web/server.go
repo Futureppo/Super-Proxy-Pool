@@ -15,6 +15,7 @@ import (
 	"super-proxy-pool/internal/auth"
 	"super-proxy-pool/internal/config"
 	"super-proxy-pool/internal/events"
+	"super-proxy-pool/internal/mihomo"
 	"super-proxy-pool/internal/models"
 	"super-proxy-pool/internal/nodes"
 	"super-proxy-pool/internal/pools"
@@ -31,6 +32,8 @@ type App struct {
 	subscriptions *subscriptions.Service
 	pools         *pools.Service
 	probe         *probe.Service
+	mihomo        *mihomo.Manager
+	installer     *mihomo.Installer
 	events        *events.Broker
 	shutdown      func()
 	loginTmpl     *template.Template
@@ -58,7 +61,7 @@ type pageMeta struct {
 	Description string
 }
 
-func New(authSvc *auth.Service, settingsSvc *settings.Service, nodeSvc *nodes.Service, subSvc *subscriptions.Service, poolSvc *pools.Service, probeSvc *probe.Service, broker *events.Broker, shutdown func()) (*App, error) {
+func New(authSvc *auth.Service, settingsSvc *settings.Service, nodeSvc *nodes.Service, subSvc *subscriptions.Service, poolSvc *pools.Service, probeSvc *probe.Service, mihomoMgr *mihomo.Manager, installer *mihomo.Installer, broker *events.Broker, shutdown func()) (*App, error) {
 	funcs := template.FuncMap{"eq": func(a, b string) bool { return a == b }}
 	loginTmpl, err := template.New("login").Funcs(funcs).ParseFS(webassets.FS, "templates/base.html", "templates/login.html")
 	if err != nil {
@@ -75,6 +78,8 @@ func New(authSvc *auth.Service, settingsSvc *settings.Service, nodeSvc *nodes.Se
 		subscriptions: subSvc,
 		pools:         poolSvc,
 		probe:         probeSvc,
+		mihomo:        mihomoMgr,
+		installer:     installer,
 		events:        broker,
 		shutdown:      shutdown,
 		loginTmpl:     loginTmpl,
@@ -170,6 +175,9 @@ func (a *App) Router() (http.Handler, error) {
 
 			api.Get("/settings", a.handleSettingsGet)
 			api.Put("/settings", a.handleSettingsUpdate)
+			api.Get("/mihomo/status", a.handleMihomoStatus)
+			api.Get("/mihomo/release", a.handleMihomoRelease)
+			api.Post("/mihomo/install", a.handleMihomoInstall)
 			api.Post("/system/restart", a.handleRestart)
 		})
 	})
@@ -598,6 +606,54 @@ func (a *App) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
+}
+
+func (a *App) handleMihomoStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: a.mihomo.Status()})
+}
+
+func (a *App) handleMihomoRelease(w http.ResponseWriter, r *http.Request) {
+	info, err := a.installer.LatestRelease(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: info})
+}
+
+func (a *App) handleMihomoInstall(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AssetName string `json:"asset_name"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	install, err := a.installer.Install(r.Context(), req.AssetName)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	currentSettings, err := a.settings.Get(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	activated := true
+	activationError := ""
+	if err := a.mihomo.ActivateBinary(r.Context(), install.InstalledPath, currentSettings.MihomoControllerSecret); err != nil {
+		activated = false
+		activationError = err.Error()
+	}
+
+	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: map[string]any{
+		"install":          install,
+		"activated":        activated,
+		"activation_error": activationError,
+		"status":           a.mihomo.Status(),
+	}})
 }
 
 func (a *App) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {

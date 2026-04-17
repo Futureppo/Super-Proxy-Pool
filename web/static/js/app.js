@@ -3,6 +3,8 @@ const subscriptionId = document.body.dataset.subscriptionId || "";
 
 const state = {
   settings: null,
+  mihomoStatus: null,
+  mihomoRelease: null,
   subscriptions: [],
   manualNodes: [],
   subscriptionNodes: [],
@@ -297,6 +299,9 @@ async function initSettingsPage() {
   $("#settingsForm").addEventListener("submit", saveSettings);
   $("#passwordForm").addEventListener("submit", changePassword);
   $("#restartButton").addEventListener("click", restartSystem);
+  $("#mihomoRefreshButton").addEventListener("click", refreshMihomoRelease);
+  $("#mihomoInstallRecommendedButton").addEventListener("click", () => installMihomo({ recommended: true }));
+  $("#mihomoInstallButton").addEventListener("click", () => installMihomo({ recommended: false }));
   await loadSettings();
 }
 
@@ -362,6 +367,207 @@ async function loadSettings() {
   const settings = await api("/api/settings");
   state.settings = settings;
   fillForm($("#settingsForm"), settings);
+
+  if (page !== "settings") {
+    return;
+  }
+
+  const [statusResult, releaseResult] = await Promise.allSettled([
+    api("/api/mihomo/status"),
+    api("/api/mihomo/release"),
+  ]);
+
+  state.mihomoStatus = statusResult.status === "fulfilled" ? statusResult.value : null;
+  state.mihomoRelease = releaseResult.status === "fulfilled" ? releaseResult.value : null;
+
+  renderMihomoStatus(statusResult.status === "rejected" ? statusResult.reason : null);
+  renderMihomoRelease(releaseResult.status === "rejected" ? releaseResult.reason : null);
+}
+
+function renderMihomoStatus(error) {
+  const meta = $("#mihomoStatusMeta");
+  const details = $("#mihomoStatusDetails");
+  if (!meta || !details) return;
+
+  const status = state.mihomoStatus;
+  if (!status) {
+    meta.innerHTML = badgeHTML("内核状态加载失败", "unavailable");
+    details.innerHTML = renderDetailItem("错误信息", escapeHTML(error?.message || "无法获取 Mihomo 运行状态"));
+    return;
+  }
+
+  const runtimeState = status.binary_available
+    ? (status.prod_running || status.probe_running ? "available" : "testing")
+    : "unavailable";
+  meta.innerHTML = [
+    badgeHTML(status.binary_available ? "已检测到内核" : "未检测到内核", runtimeState),
+    badgeHTML(`${escapeHTML(status.host_os)}/${escapeHTML(status.host_arch)}`),
+    badgeHTML(status.prod_running ? "prod 已运行" : "prod 未运行", status.prod_running ? "available" : "disabled"),
+    badgeHTML(status.probe_running ? "probe 已运行" : "probe 未运行", status.probe_running ? "available" : "disabled"),
+  ].join("");
+
+  details.innerHTML = [
+    renderDetailItem("当前二进制", status.binary_path ? `<code>${escapeHTML(status.binary_path)}</code>` : "未安装"),
+    renderDetailItem("运行目录", status.runtime_dir ? `<code>${escapeHTML(status.runtime_dir)}</code>` : "-"),
+    renderDetailItem("进程信息", [
+      `prod: ${status.prod_running ? `PID ${status.prod_pid}` : "未运行"}`,
+      `probe: ${status.probe_running ? `PID ${status.probe_pid}` : "未运行"}`,
+    ].join("<br>")),
+  ].join("");
+}
+
+function renderMihomoRelease(error) {
+  const recommendedNode = $("#mihomoRecommendedAsset");
+  const select = $("#mihomoAssetSelect");
+  const recommendedButton = $("#mihomoInstallRecommendedButton");
+  const installButton = $("#mihomoInstallButton");
+  if (!recommendedNode || !select || !recommendedButton || !installButton) return;
+
+  const release = state.mihomoRelease;
+  if (!release) {
+    recommendedNode.innerHTML = `无法加载 Mihomo release 列表：${escapeHTML(error?.message || "请检查服务器网络或稍后再试。")}`;
+    select.innerHTML = `<option value="">暂无可用版本</option>`;
+    select.disabled = true;
+    recommendedButton.disabled = true;
+    installButton.disabled = true;
+    return;
+  }
+
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const recommended = assets.find((asset) => asset.recommended) || assets[0] || null;
+
+  recommendedNode.innerHTML = recommended
+    ? [
+        `<strong>最新版本：${escapeHTML(release.tag_name || release.name || "-")}</strong>`,
+        `<div class="muted">推荐资产：<code>${escapeHTML(recommended.name)}</code></div>`,
+        `<div class="muted">安装位置：<code>${escapeHTML(recommended.install_path || "-")}</code></div>`,
+        `<div class="muted">说明：${escapeHTML(describeMihomoAsset(recommended))}</div>`,
+      ].join("")
+    : `最新版本：${escapeHTML(release.tag_name || release.name || "-")}，但没有找到当前主机可用的资产。`;
+
+  if (!assets.length) {
+    select.innerHTML = `<option value="">暂无兼容版本</option>`;
+    select.disabled = true;
+    recommendedButton.disabled = true;
+    installButton.disabled = true;
+    return;
+  }
+
+  select.innerHTML = assets.map((asset) => `
+    <option value="${escapeHTML(asset.name)}"${asset.recommended ? " selected" : ""}>
+      ${escapeHTML(asset.name)}${asset.notes?.length ? ` (${escapeHTML(asset.notes.join(", "))})` : ""}
+    </option>
+  `).join("");
+  select.disabled = false;
+  recommendedButton.disabled = false;
+  installButton.disabled = false;
+}
+
+async function refreshMihomoRelease(event) {
+  const button = event.currentTarget;
+  setButtonLoading(button, true);
+  try {
+    const [statusResult, releaseResult] = await Promise.allSettled([
+      api("/api/mihomo/status"),
+      api("/api/mihomo/release"),
+    ]);
+    state.mihomoStatus = statusResult.status === "fulfilled" ? statusResult.value : null;
+    state.mihomoRelease = releaseResult.status === "fulfilled" ? releaseResult.value : null;
+    renderMihomoStatus(statusResult.status === "rejected" ? statusResult.reason : null);
+    renderMihomoRelease(releaseResult.status === "rejected" ? releaseResult.reason : null);
+    if (statusResult.status === "fulfilled" || releaseResult.status === "fulfilled") {
+      toast("Mihomo 版本列表已刷新", "success");
+      return;
+    }
+    throw releaseResult.reason || statusResult.reason || new Error("刷新失败");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+async function installMihomo({ recommended }) {
+  const release = state.mihomoRelease;
+  const select = $("#mihomoAssetSelect");
+  if (!release || !select) {
+    toast("当前没有可安装的 Mihomo 版本", "error");
+    return;
+  }
+
+  const asset = recommended
+    ? (release.assets || []).find((item) => item.recommended) || (release.assets || [])[0]
+    : (release.assets || []).find((item) => item.name === select.value);
+  if (!asset) {
+    toast("请选择一个可安装的 Mihomo 版本", "error");
+    return;
+  }
+
+  const button = recommended ? $("#mihomoInstallRecommendedButton") : $("#mihomoInstallButton");
+  setButtonLoading(button, true);
+  clearFeedback("#mihomoFeedback");
+
+  try {
+    const result = await api("/api/mihomo/install", {
+      method: "POST",
+      body: JSON.stringify({ asset_name: asset.name }),
+    });
+
+    const install = result.install || {};
+    const items = [
+      `版本：${install.release_tag || release.tag_name || "-"}`,
+      `资产：${install.asset?.name || asset.name}`,
+      `路径：${install.installed_path || asset.install_path || "-"}`,
+    ];
+    if (install.already_installed) {
+      items.push("该版本已存在，已直接切换为当前使用版本。");
+    }
+
+    setFeedback("#mihomoFeedback", {
+      tone: result.activated ? "success" : "error",
+      title: result.activated ? "Mihomo 下载并启用成功" : "Mihomo 已下载，但启用失败",
+      message: result.activated
+        ? "新的 Mihomo 内核已经写入服务器并接管当前实例。"
+        : (result.activation_error || "请检查二进制权限、系统依赖或稍后重试。"),
+      items,
+    });
+
+    if (result.status) {
+      state.mihomoStatus = result.status;
+      renderMihomoStatus(null);
+    }
+    try {
+      state.mihomoRelease = await api("/api/mihomo/release");
+      renderMihomoRelease(null);
+    } catch (refreshError) {
+      renderMihomoRelease(refreshError);
+    }
+    toast(result.activated ? "Mihomo 已下载并启用" : "Mihomo 已下载，但当前启用失败", result.activated ? "success" : "error");
+  } catch (error) {
+    setFeedback("#mihomoFeedback", {
+      tone: "error",
+      title: "Mihomo 下载失败",
+      message: error.message,
+    });
+    toast(error.message, "error");
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+function renderDetailItem(label, value) {
+  return `
+    <div class="detail-item">
+      <strong>${escapeHTML(label)}</strong>
+      <div>${value}</div>
+    </div>
+  `;
+}
+
+function describeMihomoAsset(asset) {
+  const notes = Array.isArray(asset?.notes) ? asset.notes.filter(Boolean) : [];
+  if (!notes.length) return "默认构建";
+  return notes.join(", ");
 }
 
 async function saveSubscription(event) {

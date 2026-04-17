@@ -36,6 +36,8 @@ type App struct {
 	RuntimeDir              string
 	ProdConfigPath          string
 	ProbeConfigPath         string
+	MihomoInstallDir        string
+	MihomoBinaryStatePath   string
 	MihomoBinaryPath        string
 	ProdControllerAddr      string
 	ProbeControllerAddr     string
@@ -57,7 +59,9 @@ func Load() App {
 		RuntimeDir:              runtimeDir,
 		ProdConfigPath:          filepath.Join(runtimeDir, "mihomo-prod.yaml"),
 		ProbeConfigPath:         filepath.Join(runtimeDir, "mihomo-probe.yaml"),
-		MihomoBinaryPath:        resolveMihomoBinary(cwd, os.Getenv("MIHOMO_BINARY")),
+		MihomoInstallDir:        MihomoInstallDir(dataDir),
+		MihomoBinaryStatePath:   MihomoBinaryStatePath(dataDir),
+		MihomoBinaryPath:        resolveMihomoBinary(cwd, dataDir, os.Getenv("MIHOMO_BINARY")),
 		ProdControllerAddr:      getenv("PROD_CONTROLLER_ADDR", defaultProdControllerAddr),
 		ProbeControllerAddr:     getenv("PROBE_CONTROLLER_ADDR", defaultProbeControllerAddr),
 		ProbeMixedPort:          getenvInt("PROBE_MIXED_PORT", defaultProbeMixedPort),
@@ -86,6 +90,13 @@ func DefaultSpeedTimeoutMS() int          { return defaultSpeedTimeoutMS }
 func DefaultSpeedConcurrency() int        { return defaultSpeedConcurrency }
 func DefaultSubscriptionIntervalSec() int { return defaultSubscriptionIntervalSec }
 func DefaultSpeedMaxBytes() int64         { return defaultSpeedMaxBytes }
+func MihomoInstallDir(dataDir string) string {
+	return filepath.Join(dataDir, "bin")
+}
+
+func MihomoBinaryStatePath(dataDir string) string {
+	return filepath.Join(dataDir, "mihomo-binary.txt")
+}
 
 func getenv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -123,11 +134,16 @@ func defaultMihomoBinaryFor(goos string) string {
 	return "/usr/local/bin/mihomo"
 }
 
-func resolveMihomoBinary(baseDir, override string) string {
+func resolveMihomoBinary(baseDir, dataDir, override string) string {
 	if override != "" {
 		return override
 	}
-	for _, candidate := range mihomoBinaryCandidates(baseDir, runtime.GOOS, runtime.GOARCH) {
+	if managed := managedMihomoBinaryPath(dataDir); managed != "" {
+		if resolved, err := exec.LookPath(managed); err == nil {
+			return resolved
+		}
+	}
+	for _, candidate := range mihomoBinaryCandidates(baseDir, dataDir, runtime.GOOS, runtime.GOARCH) {
 		if resolved, err := exec.LookPath(candidate); err == nil {
 			return resolved
 		}
@@ -135,23 +151,52 @@ func resolveMihomoBinary(baseDir, override string) string {
 	return defaultMihomoBinary()
 }
 
-func mihomoBinaryCandidates(baseDir, goos, goarch string) []string {
+func managedMihomoBinaryPath(dataDir string) string {
+	if dataDir == "" {
+		return ""
+	}
+	content, err := os.ReadFile(MihomoBinaryStatePath(dataDir))
+	if err != nil {
+		return ""
+	}
+	return string(bytesTrimSpace(content))
+}
+
+func mihomoBinaryCandidates(baseDir, dataDir, goos, goarch string) []string {
 	name := mihomoBinaryName(goos)
 	platformName := mihomoPlatformBinaryName(goos, goarch)
-	locations := [][]string{
-		{"bin"},
-		{"tools"},
-		{"deployments", "bin"},
-		nil,
+	type candidateRoot struct {
+		base      string
+		locations [][]string
+	}
+	roots := []candidateRoot{
+		{
+			base: dataDir,
+			locations: [][]string{
+				{"bin"},
+			},
+		},
+		{
+			base: baseDir,
+			locations: [][]string{
+				{"bin"},
+				{"tools"},
+				{"deployments", "bin"},
+				nil,
+			},
+		},
 	}
 	var candidates []string
-	if baseDir != "" {
-		for _, location := range locations {
+	for _, root := range roots {
+		if root.base == "" {
+			continue
+		}
+		for _, location := range root.locations {
 			for _, binaryName := range []string{name, platformName} {
 				if binaryName == "" {
 					continue
 				}
-				parts := append([]string{baseDir}, location...)
+				parts := append([]string{root.base}, location...)
 				parts = append(parts, binaryName)
 				candidates = append(candidates, filepath.Join(parts...))
 			}
@@ -199,6 +244,29 @@ func uniqueStrings(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func bytesTrimSpace(value []byte) []byte {
+	start := 0
+	end := len(value)
+	for start < end {
+		switch value[start] {
+		case ' ', '\n', '\r', '\t':
+			start++
+		default:
+			goto trimEnd
+		}
+	}
+trimEnd:
+	for end > start {
+		switch value[end-1] {
+		case ' ', '\n', '\r', '\t':
+			end--
+		default:
+			return value[start:end]
+		}
+	}
+	return value[start:end]
 }
 
 func randomHex(n int) string {

@@ -184,6 +184,10 @@ textarea { resize: vertical; }
 .settings-grid {
   grid-template-columns: minmax(320px, 1fr) minmax(320px, 420px);
 }
+.settings-side {
+  display: grid;
+  gap: 20px;
+}
 
 .panel-card {
   padding: 20px;
@@ -362,6 +366,26 @@ textarea { resize: vertical; }
   margin: 0;
   color: var(--text-muted);
   font-size: 13px;
+}
+.detail-grid {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+}
+.detail-item {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #fbfcff;
+}
+.detail-item strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.mihomo-install-panel {
+  margin-top: 16px;
 }
 
 .feedback-panel {

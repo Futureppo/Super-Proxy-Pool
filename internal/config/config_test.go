@@ -8,7 +8,7 @@ import (
 )
 
 func TestResolveMihomoBinaryPrefersOverride(t *testing.T) {
-	got := resolveMihomoBinary(t.TempDir(), "/custom/mihomo")
+	got := resolveMihomoBinary(t.TempDir(), t.TempDir(), "/custom/mihomo")
 	if got != "/custom/mihomo" {
 		t.Fatalf("expected override to win, got %q", got)
 	}
@@ -32,15 +32,43 @@ func TestResolveMihomoBinaryFindsRepoLocalBinary(t *testing.T) {
 		}
 	}
 
-	got := resolveMihomoBinary(baseDir, "")
+	got := resolveMihomoBinary(baseDir, t.TempDir(), "")
 	if got != path {
 		t.Fatalf("expected local binary %q, got %q", path, got)
 	}
 }
 
+func TestResolveMihomoBinaryPrefersManagedSelection(t *testing.T) {
+	baseDir := t.TempDir()
+	dataDir := t.TempDir()
+	installDir := MihomoInstallDir(dataDir)
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatalf("mkdir install dir: %v", err)
+	}
+
+	selected := filepath.Join(installDir, mihomoPlatformBinaryName(runtime.GOOS, runtime.GOARCH))
+	if err := os.WriteFile(selected, []byte("echo selected"), 0o755); err != nil {
+		t.Fatalf("write selected binary: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(selected, 0o755); err != nil {
+			t.Fatalf("chmod selected binary: %v", err)
+		}
+	}
+	if err := os.WriteFile(MihomoBinaryStatePath(dataDir), []byte(selected+"\n"), 0o644); err != nil {
+		t.Fatalf("write state file: %v", err)
+	}
+
+	got := resolveMihomoBinary(baseDir, dataDir, "")
+	if got != selected {
+		t.Fatalf("expected managed binary %q, got %q", selected, got)
+	}
+}
+
 func TestMihomoBinaryCandidatesIncludeRepoLocations(t *testing.T) {
-	candidates := mihomoBinaryCandidates("/repo", "windows", "amd64")
+	candidates := mihomoBinaryCandidates("/repo", "/data", "windows", "amd64")
 	want := []string{
+		filepath.Join("/data", "bin", "mihomo.exe"),
 		filepath.Join("/repo", "bin", "mihomo.exe"),
 		filepath.Join("/repo", "tools", "mihomo.exe"),
 		filepath.Join("/repo", "deployments", "bin", "mihomo.exe"),

@@ -35,6 +35,7 @@ type Manager struct {
 	httpClient *http.Client
 
 	mu           sync.Mutex
+	binaryPath   string
 	prodCmd      *exec.Cmd
 	probeCmd     *exec.Cmd
 	hasBinary    bool
@@ -46,13 +47,17 @@ type Manager struct {
 }
 
 func NewManager(opts Options) *Manager {
-	resolvedBinary, err := exec.LookPath(opts.BinaryPath)
-	if err == nil {
-		opts.BinaryPath = resolvedBinary
+	resolvedBinary := opts.BinaryPath
+	hasBinary := false
+	if path, err := exec.LookPath(opts.BinaryPath); err == nil {
+		resolvedBinary = path
+		opts.BinaryPath = path
+		hasBinary = true
 	}
 	return &Manager{
-		opts:      opts,
-		hasBinary: err == nil,
+		opts:       opts,
+		binaryPath: resolvedBinary,
+		hasBinary:  hasBinary,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -80,7 +85,7 @@ func (m *Manager) Start(ctx context.Context, secret string) error {
 			return err
 		}
 	}
-	if !m.hasBinary {
+	if !m.binaryAvailable() {
 		return nil
 	}
 	if err := m.ensureProcess(ctx, "prod"); err != nil {
@@ -119,6 +124,45 @@ func (m *Manager) ProbeControllerAddr() string {
 	return m.opts.ProbeControllerAddr
 }
 
+func (m *Manager) Status() RuntimeStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	status := RuntimeStatus{
+		HostOS:          runtime.GOOS,
+		HostArch:        runtime.GOARCH,
+		BinaryPath:      m.binaryPath,
+		BinaryAvailable: m.hasBinary,
+		RuntimeDir:      m.opts.RuntimeDir,
+	}
+	if m.prodCmd != nil && m.prodCmd.Process != nil {
+		status.ProdRunning = true
+		status.ProdPID = m.prodCmd.Process.Pid
+	}
+	if m.probeCmd != nil && m.probeCmd.Process != nil {
+		status.ProbeRunning = true
+		status.ProbePID = m.probeCmd.Process.Pid
+	}
+	return status
+}
+
+func (m *Manager) ActivateBinary(ctx context.Context, path, secret string) error {
+	resolvedBinary, err := exec.LookPath(path)
+	if err != nil {
+		return err
+	}
+
+	m.Stop()
+
+	m.mu.Lock()
+	m.binaryPath = resolvedBinary
+	m.hasBinary = true
+	m.lastSecret = secret
+	m.mu.Unlock()
+
+	return m.Start(ctx, secret)
+}
+
 func (m *Manager) ApplyProdConfig(ctx context.Context, payload []byte) error {
 	return m.applySingleConfig(ctx, "prod", m.opts.ProdConfigPath, payload)
 }
@@ -134,7 +178,7 @@ func (m *Manager) ApplyConfigBundle(ctx context.Context, prodPayload, probePaylo
 	if err := writeFileAtomic(m.opts.ProbeConfigPath, probePayload); err != nil {
 		return err
 	}
-	if !m.hasBinary {
+	if !m.binaryAvailable() {
 		m.setLastSecret(nextSecret)
 		return nil
 	}
@@ -170,7 +214,7 @@ func (m *Manager) applySingleConfig(ctx context.Context, kind, configPath string
 	if err := writeFileAtomic(configPath, payload); err != nil {
 		return err
 	}
-	if !m.hasBinary {
+	if !m.binaryAvailable() {
 		return nil
 	}
 	probe := kind == "probe"
@@ -186,7 +230,7 @@ func (m *Manager) applySingleConfig(ctx context.Context, kind, configPath string
 }
 
 func (m *Manager) Delay(ctx context.Context, secret, proxyName, targetURL string, timeoutMS int) (int64, error) {
-	if !m.hasBinary {
+	if !m.binaryAvailable() {
 		return 0, errors.New("mihomo binary not available")
 	}
 	if err := m.waitController(ctx, true); err != nil {
@@ -228,7 +272,7 @@ func (m *Manager) SetGlobalProxy(ctx context.Context, secret, proxyName string) 
 }
 
 func (m *Manager) SetProxySelection(ctx context.Context, secret, groupName, proxyName string) error {
-	if !m.hasBinary {
+	if !m.binaryAvailable() {
 		return errors.New("mihomo binary not available")
 	}
 	if err := m.waitController(ctx, true); err != nil {
@@ -260,7 +304,7 @@ func (m *Manager) waitController(ctx context.Context, probe bool) error {
 }
 
 func (m *Manager) waitControllerWithSecret(ctx context.Context, probe bool, secret string) error {
-	if !m.hasBinary {
+	if !m.binaryAvailable() {
 		return nil
 	}
 	addr := m.opts.ProdControllerAddr
@@ -311,13 +355,14 @@ func (m *Manager) startProcess(ctx context.Context, kind string) error {
 		m.mu.Unlock()
 		return context.Canceled
 	}
+	binaryPath := m.binaryPath
 	if existing := m.currentCmdLocked(kind); existing != nil && existing.Process != nil {
 		m.mu.Unlock()
 		return nil
 	}
 	m.mu.Unlock()
 
-	cmd := exec.CommandContext(ctx, m.opts.BinaryPath, "-d", m.opts.RuntimeDir, "-f", configPath)
+	cmd := exec.CommandContext(ctx, binaryPath, "-d", m.opts.RuntimeDir, "-f", configPath)
 	cmd.Dir = m.opts.RuntimeDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -400,6 +445,12 @@ func (m *Manager) currentSecret() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastSecret
+}
+
+func (m *Manager) binaryAvailable() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hasBinary && m.binaryPath != ""
 }
 
 func (m *Manager) setLastSecret(secret string) {

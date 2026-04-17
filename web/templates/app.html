@@ -236,7 +236,7 @@
           <section class="settings-section">
             <header class="settings-section-head">
               <h3>面板设置</h3>
-              <p>管理面板监听地址与端口。此分组保存后通常需要重启系统才会完全生效。</p>
+              <p>管理面板监听地址与端口。该分组保存后通常需要重启系统才会完全生效。</p>
             </header>
             <label>
               <span>面板监听地址</span>
@@ -321,28 +321,58 @@
         </form>
       </article>
 
-      <article class="panel-card form-card">
-        <h2>修改密码</h2>
-        <form id="passwordForm" class="stack-form">
-          <label>
-            <span>旧密码</span>
-            <input type="password" name="old_password" required autocomplete="current-password">
-          </label>
-          <label>
-            <span>新密码</span>
-            <input type="password" name="new_password" required autocomplete="new-password">
-          </label>
-          <div class="form-actions">
-            <button type="submit" data-loading-text="提交中...">修改密码</button>
+      <div class="settings-side">
+        <article class="panel-card form-card">
+          <div class="toolbar toolbar-spread">
+            <div>
+              <h2>Mihomo 内核</h2>
+              <p class="muted">检查当前服务器的 Mihomo 状态，并直接下载安装适合当前主机的版本。</p>
+            </div>
+            <button id="mihomoRefreshButton" type="button" class="secondary" data-loading-text="刷新中...">刷新版本列表</button>
           </div>
-        </form>
+          <div id="mihomoFeedback" class="feedback-panel" hidden></div>
+          <div id="mihomoStatusMeta" class="meta-strip"></div>
+          <div id="mihomoStatusDetails" class="detail-grid"></div>
+          <div class="settings-section mihomo-install-panel">
+            <header class="settings-section-head">
+              <h3>下载与启用</h3>
+              <p>系统会根据当前服务器的 OS / ARCH 筛出可用内核。下载后会立即切换到新内核，重启后也会继续使用。</p>
+            </header>
+            <div id="mihomoRecommendedAsset" class="entity-notice"></div>
+            <label>
+              <span>选择兼容版本</span>
+              <select id="mihomoAssetSelect"></select>
+            </label>
+            <div class="form-actions">
+              <button id="mihomoInstallRecommendedButton" type="button" data-loading-text="下载中...">下载推荐版本</button>
+              <button id="mihomoInstallButton" type="button" class="secondary" data-loading-text="下载中...">下载所选版本</button>
+            </div>
+          </div>
+        </article>
 
-        <div class="danger-zone">
-          <h3>危险操作</h3>
-          <p>重启系统会先保存当前配置，然后退出主进程。若容器配置了 Docker restart policy，会自动拉起；若没有配置，则需要手动重新启动服务。</p>
-          <button id="restartButton" class="danger" type="button" data-loading-text="重启中...">重启系统</button>
-        </div>
-      </article>
+        <article class="panel-card form-card">
+          <h2>修改密码</h2>
+          <form id="passwordForm" class="stack-form">
+            <label>
+              <span>旧密码</span>
+              <input type="password" name="old_password" required autocomplete="current-password">
+            </label>
+            <label>
+              <span>新密码</span>
+              <input type="password" name="new_password" required autocomplete="new-password">
+            </label>
+            <div class="form-actions">
+              <button type="submit" data-loading-text="提交中...">修改密码</button>
+            </div>
+          </form>
+
+          <div class="danger-zone">
+            <h3>危险操作</h3>
+            <p>重启系统会先保存当前配置，然后退出主进程。若容器配置了 Docker restart policy，会自动拉起；若没有配置，则需要手动重新启动服务。</p>
+            <button id="restartButton" class="danger" type="button" data-loading-text="重启中...">重启系统</button>
+          </div>
+        </article>
+      </div>
     </section>
     {{end}}
   </main>

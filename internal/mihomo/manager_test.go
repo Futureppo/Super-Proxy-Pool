@@ -69,6 +69,7 @@ func TestApplyConfigBundleRotatesControllerSecret(t *testing.T) {
 			ProbeControllerAddr: strings.TrimPrefix(probeServer.URL, "http://"),
 		},
 		httpClient:   &http.Client{Timeout: 2 * time.Second},
+		binaryPath:   "/tmp/mihomo",
 		hasBinary:    true,
 		lastSecret:   oldSecret,
 		expectedExit: make(map[int]struct{}),

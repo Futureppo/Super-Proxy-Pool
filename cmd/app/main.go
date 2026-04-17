@@ -70,6 +70,7 @@ func main() {
 		ProbeMixedPort:      cfg.ProbeMixedPort,
 		InitialLogLevel:     currentSettings.LogLevel,
 	})
+	mihomoInstaller := mihomo.NewInstaller(cfg.MihomoInstallDir, cfg.MihomoBinaryStatePath)
 	poolSvc := pools.NewService(store, settingsSvc, nodeSvc, subSvc, mihomoMgr, broker)
 	probeSvc := probe.NewService(settingsSvc, store, nodeSvc, subSvc, poolSvc, mihomoMgr, broker)
 	subSvc.SetAfterSyncHook(func(ctx context.Context, subscriptionID int64, nodeIDs []int64) {
@@ -93,7 +94,7 @@ func main() {
 	probeSvc.Start(rootCtx)
 	subSvc.StartScheduler(rootCtx)
 
-	webApp, err := web.New(authSvc, settingsSvc, nodeSvc, subSvc, poolSvc, probeSvc, broker, requestShutdown)
+	webApp, err := web.New(authSvc, settingsSvc, nodeSvc, subSvc, poolSvc, probeSvc, mihomoMgr, mihomoInstaller, broker, requestShutdown)
 	if err != nil {
 		log.Fatalf("build web app: %v", err)
 	}
