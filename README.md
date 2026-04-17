@@ -13,7 +13,7 @@
 
 ## 默认配置
 
-- 面板地址：`0.0.0.0:7890`
+- 面板地址：`0.0.0.0:7891`
 - 默认密码：`admin`
 - SQLite：
   - Docker：`/data/app.db`
@@ -54,6 +54,17 @@
 
 ### Windows
 
+一键启动命令（推荐，仓库根目录执行）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deployments\dev.ps1
+```
+
+说明：
+
+- 默认面板端口为 `7891`
+- 如果仓库下存在 `.\bin\mihomo.exe`，启动脚本会自动发现并拉起 Mihomo
+
 直接运行：
 
 ```powershell
@@ -76,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\deployments\dev.ps1 `
 
 启动后访问：
 
-- [http://127.0.0.1:7890/login](http://127.0.0.1:7890/login)
+- [http://127.0.0.1:7891/login](http://127.0.0.1:7891/login)
 
 ### Linux / macOS
 
@@ -133,7 +144,7 @@ docker run -d \
 docker run -d \
   --name super-proxy-pool \
   --restart unless-stopped \
-  -p 7890:7890 \
+  -p 7891:7891 \
   -p 18080-18120:18080-18120 \
   -v $PWD/data:/data \
   super-proxy-pool

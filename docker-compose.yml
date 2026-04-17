@@ -13,7 +13,7 @@ services:
     volumes:
       - ./data:/data
     ports:
-      - "7890:7890"
+      - "7891:7891"
       - "18080-18120:18080-18120"
 
   super-proxy-pool-host:

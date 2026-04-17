@@ -1,6 +1,6 @@
 param(
     [string]$PanelHost = "0.0.0.0",
-    [int]$PanelPort = 7890,
+    [int]$PanelPort = 7891,
     [string]$DataDir = "",
     [string]$MihomoBinary = ""
 )

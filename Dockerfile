@@ -24,7 +24,7 @@ WORKDIR /app
 COPY --from=builder /out/super-proxy-pool /usr/local/bin/super-proxy-pool
 
 VOLUME ["/data"]
-EXPOSE 7890
+EXPOSE 7891
 ENV DATA_DIR=/data
 ENV MIHOMO_BINARY=/usr/local/bin/mihomo
 

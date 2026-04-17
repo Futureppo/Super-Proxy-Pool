@@ -747,8 +747,8 @@ function renderPools() {
       </div>
       ${item.last_error ? `<div class="entity-notice error-copy">最近错误：${escapeHTML(item.last_error)}</div>` : ""}
       <div class="entity-meta muted pool-connection">
-        <span>SOCKS5：<code>socks5://${escapeHTML(item.auth_username || "")}:******@服务器IP:${escapeHTML(String(state.settings?.panel_port || 7890))}</code></span>
-        <span>HTTP：<code>http://${escapeHTML(item.auth_username || "")}:******@服务器IP:${escapeHTML(String(state.settings?.panel_port || 7890))}</code></span>
+        <span>SOCKS5：<code>socks5://${escapeHTML(item.auth_username || "")}:******@服务器IP:${escapeHTML(String(state.settings?.panel_port || 7891))}</code></span>
+        <span>HTTP：<code>http://${escapeHTML(item.auth_username || "")}:******@服务器IP:${escapeHTML(String(state.settings?.panel_port || 7891))}</code></span>
         <span>密码：<code data-role="pool-password" data-secret="${escapeHTML(item.auth_password_secret || "")}">******</code></span>
       </div>
       <div class="entity-actions">
@@ -1130,14 +1130,14 @@ function badgeHTML(text, type = "") {
 }
 
 function poolConnectionString(item) {
-  const port = state.settings?.panel_port || 7890;
+  const port = state.settings?.panel_port || 7891;
   const username = encodeURIComponent(item.auth_username || "");
   const password = encodeURIComponent(item.auth_password_secret || "");
   return `socks5://${username}:${password}@服务器IP:${port}`;
 }
 
 function poolConnectionClipboardText(item) {
-  const port = state.settings?.panel_port || 7890;
+  const port = state.settings?.panel_port || 7891;
   const username = encodeURIComponent(item.auth_username || "");
   const password = encodeURIComponent(item.auth_password_secret || "");
   const socks5Url = `socks5://${username}:${password}@server-ip:${port}`;

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PANEL_HOST="${PANEL_HOST:-0.0.0.0}"
-PANEL_PORT="${PANEL_PORT:-7890}"
+PANEL_PORT="${PANEL_PORT:-7891}"
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data}"
 MIHOMO_BINARY="${MIHOMO_BINARY:-}"
 
