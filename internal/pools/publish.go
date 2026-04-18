@@ -216,7 +216,44 @@ func normalizedNodeMap(node models.RuntimeNode) map[string]any {
 			"name":   node.DisplayName,
 		}
 	}
+	sanitizeRuntimeNodePayload(node, payload)
 	return payload
+}
+
+func sanitizeRuntimeNodePayload(node models.RuntimeNode, payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	protocol := strings.ToLower(strings.TrimSpace(node.Protocol))
+	if rawType, ok := payload["type"].(string); ok {
+		rawType = strings.ToLower(strings.TrimSpace(rawType))
+		if protocol != "" && rawType != "" && rawType != protocol && isTransportType(rawType) {
+			if _, exists := payload["network"]; !exists {
+				payload["network"] = rawType
+			}
+		}
+	}
+	if node.Protocol != "" {
+		payload["type"] = node.Protocol
+	}
+	if node.Server != "" {
+		payload["server"] = node.Server
+	}
+	if node.Port > 0 {
+		payload["port"] = node.Port
+	}
+	if name := strings.TrimSpace(node.DisplayName); name != "" {
+		payload["name"] = name
+	}
+}
+
+func isTransportType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "tcp", "ws", "grpc", "h2", "http", "quic", "kcp", "httpupgrade":
+		return true
+	default:
+		return false
+	}
 }
 
 func strategyToMihomo(strategy string) (groupType string, lbStrategy string) {

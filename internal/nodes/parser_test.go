@@ -43,3 +43,19 @@ proxies:
 		t.Fatalf("unexpected yaml parse result: %+v", nodes)
 	}
 }
+
+func TestParseSimpleURLNodePreservesProtocolType(t *testing.T) {
+	node, err := ParseNodeURI("vless://uuid@example.org:8443?type=tcp&security=reality#node-b")
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+	if node.Protocol != "vless" {
+		t.Fatalf("Protocol = %q, want %q", node.Protocol, "vless")
+	}
+	if got := node.Normalized["type"]; got != "vless" {
+		t.Fatalf("normalized type = %#v, want %q", got, "vless")
+	}
+	if got := node.Normalized["network"]; got != "tcp" {
+		t.Fatalf("normalized network = %#v, want %q", got, "tcp")
+	}
+}

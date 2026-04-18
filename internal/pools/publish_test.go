@@ -129,3 +129,38 @@ func TestBuildPublishBundleRespectsFailoverToggleForLoadBalance(t *testing.T) {
 		t.Fatalf("did not expect health-check fields when failover is disabled:\n%s", withoutConfig)
 	}
 }
+
+func TestBuildProbeInventoryConfigSanitizesLegacyTransportTypeOverride(t *testing.T) {
+	member := models.RuntimeNode{
+		SourceType:     "subscription",
+		SourceNodeID:   55,
+		DisplayName:    "legacy-vless",
+		Protocol:       "vless",
+		Server:         "demo.example.com",
+		Port:           443,
+		Enabled:        true,
+		NormalizedJSON: `{"type":"tcp","server":"demo.example.com","port":443,"uuid":"uuid-1","security":"reality"}`,
+	}
+
+	payload, err := BuildProbeInventoryConfig(
+		"secret-token",
+		"127.0.0.1:19091",
+		17891,
+		"info",
+		[]models.RuntimeNode{member},
+	)
+	if err != nil {
+		t.Fatalf("BuildProbeInventoryConfig() error = %v", err)
+	}
+
+	config := string(payload)
+	if !strings.Contains(config, "type: vless") {
+		t.Fatalf("expected sanitized proxy type in probe config:\n%s", config)
+	}
+	if !strings.Contains(config, "network: tcp") {
+		t.Fatalf("expected transport to be preserved as network in probe config:\n%s", config)
+	}
+	if strings.Contains(config, "type: tcp") {
+		t.Fatalf("did not expect legacy transport type override in probe config:\n%s", config)
+	}
+}

@@ -202,6 +202,14 @@ func parseSimpleURLNode(protocol, raw string) (ParsedNode, error) {
 		}
 	}
 	for key, values := range u.Query() {
+		if key == "type" {
+			if len(values) == 1 {
+				normalized["network"] = values[0]
+			} else {
+				normalized["network"] = values
+			}
+			continue
+		}
 		if len(values) == 1 {
 			normalized[key] = values[0]
 		} else {

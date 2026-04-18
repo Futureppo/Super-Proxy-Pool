@@ -91,6 +91,13 @@ func main() {
 	if err := mihomoMgr.Start(context.Background(), currentSettings.MihomoControllerSecret); err != nil {
 		log.Printf("mihomo start skipped: %v", err)
 	}
+	go func() {
+		publishCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := poolSvc.Publish(publishCtx, 0); err != nil {
+			log.Printf("startup publish failed: %v", err)
+		}
+	}()
 	probeSvc.Start(rootCtx)
 	subSvc.StartScheduler(rootCtx)
 
