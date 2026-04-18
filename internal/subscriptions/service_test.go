@@ -13,6 +13,7 @@ import (
 	"super-proxy-pool/internal/db"
 	"super-proxy-pool/internal/events"
 	"super-proxy-pool/internal/models"
+	"super-proxy-pool/internal/nodes"
 	"super-proxy-pool/internal/settings"
 )
 
@@ -370,4 +371,203 @@ func TestListWithStatsAggregatesSubscriptionNodes(t *testing.T) {
 	if *item.AverageLatencyMS != 180 {
 		t.Fatalf("AverageLatencyMS = %d, want 180", *item.AverageLatencyMS)
 	}
+}
+
+func TestCreateValidatesHeadersJSON(t *testing.T) {
+	ctx, _, svc := newSubscriptionTestService(t)
+
+	_, err := svc.Create(ctx, UpsertRequest{
+		Name:            "invalid-headers",
+		URL:             "https://example.com/subscription.yaml",
+		HeadersJSON:     `{"User-Agent":1}`,
+		Enabled:         true,
+		SyncIntervalSec: 3600,
+	})
+	if err == nil {
+		t.Fatalf("Create() error = nil, want headers_json validation error")
+	}
+}
+
+func TestUpdateValidatesHeadersJSONAndUsesDefaultSyncInterval(t *testing.T) {
+	ctx, settingsSvc, svc := newSubscriptionTestService(t)
+
+	sub, err := svc.Create(ctx, UpsertRequest{
+		Name:            "update-demo",
+		URL:             "https://example.com/subscription.yaml",
+		HeadersJSON:     `{"User-Agent":"mihomo"}`,
+		Enabled:         true,
+		SyncIntervalSec: 3600,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if _, err := svc.Update(ctx, sub.ID, UpsertRequest{
+		Name:            "update-demo",
+		URL:             "https://example.com/subscription.yaml",
+		HeadersJSON:     `{"User-Agent":1}`,
+		Enabled:         true,
+		SyncIntervalSec: 3600,
+	}); err == nil {
+		t.Fatalf("Update() error = nil, want headers_json validation error")
+	}
+
+	currentSettings, err := settingsSvc.Get(ctx)
+	if err != nil {
+		t.Fatalf("settingsSvc.Get() error = %v", err)
+	}
+
+	updated, err := svc.Update(ctx, sub.ID, UpsertRequest{
+		Name:            "update-demo",
+		URL:             "https://example.com/subscription.yaml",
+		HeadersJSON:     "{\n  \"Authorization\": \"Bearer token\"\n}",
+		Enabled:         true,
+		SyncIntervalSec: 0,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.SyncIntervalSec != currentSettings.DefaultSubscriptionIntervalSec {
+		t.Fatalf("SyncIntervalSec = %d, want %d", updated.SyncIntervalSec, currentSettings.DefaultSubscriptionIntervalSec)
+	}
+	if updated.HeadersJSON != `{"Authorization":"Bearer token"}` {
+		t.Fatalf("HeadersJSON = %q, want canonical JSON", updated.HeadersJSON)
+	}
+}
+
+func TestSyncPreservesUnchangedNodeIDAndState(t *testing.T) {
+	ctx, _, svc := newSubscriptionTestService(t)
+
+	rawNode := "trojan://password@demo.example.com:443#demo-node"
+	parsedNode, err := nodes.ParseNodeURI(rawNode)
+	if err != nil {
+		t.Fatalf("ParseNodeURI() error = %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(rawNode))
+	}))
+	defer server.Close()
+
+	sub, err := svc.Create(ctx, UpsertRequest{
+		Name:            "preserve-demo",
+		URL:             server.URL,
+		Enabled:         true,
+		SyncIntervalSec: 3600,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	now := time.Now().UTC()
+	res, err := svc.store.DB.ExecContext(ctx, `INSERT INTO subscription_nodes (
+			subscription_id, display_name, protocol, server, port, raw_payload, normalized_json, enabled,
+			last_latency_ms, last_status, last_error, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sub.ID, parsedNode.DisplayName, parsedNode.Protocol, parsedNode.Server, parsedNode.Port, parsedNode.RawPayload,
+		nodes.NormalizeJSON(parsedNode.Normalized), 0, 123, "available", "keep-me", now, now,
+	)
+	if err != nil {
+		t.Fatalf("insert existing subscription node error = %v", err)
+	}
+	existingID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId() error = %v", err)
+	}
+	if _, err := svc.store.DB.ExecContext(ctx, `INSERT INTO subscription_nodes (
+			subscription_id, display_name, protocol, server, port, raw_payload, normalized_json, enabled, last_status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'unknown', ?, ?)`,
+		sub.ID, "stale-node", "trojan", "stale.example.com", 443, "trojan://password@stale.example.com:443#stale-node",
+		`{"name":"stale-node","type":"trojan","server":"stale.example.com","port":443,"password":"password"}`, now, now,
+	); err != nil {
+		t.Fatalf("insert stale subscription node error = %v", err)
+	}
+
+	hookResults := make(chan []int64, 1)
+	svc.SetAfterSyncHook(func(_ context.Context, _ int64, nodeIDs []int64) {
+		hookResults <- append([]int64(nil), nodeIDs...)
+	})
+
+	outcome, err := svc.Sync(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if !outcome.Modified || outcome.CreatedCount != 1 {
+		t.Fatalf("unexpected sync outcome: %+v", outcome)
+	}
+
+	nodesAfterSync, err := svc.ListNodes(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("ListNodes() error = %v", err)
+	}
+	if len(nodesAfterSync) != 1 {
+		t.Fatalf("ListNodes() len = %d, want 1", len(nodesAfterSync))
+	}
+	node := nodesAfterSync[0]
+	if node.ID != existingID {
+		t.Fatalf("node.ID = %d, want preserved ID %d", node.ID, existingID)
+	}
+	if node.Enabled {
+		t.Fatalf("node.Enabled = true, want preserved disabled state")
+	}
+	if node.LastStatus != "available" {
+		t.Fatalf("node.LastStatus = %q, want %q", node.LastStatus, "available")
+	}
+	if node.LastError != "keep-me" {
+		t.Fatalf("node.LastError = %q, want %q", node.LastError, "keep-me")
+	}
+	if node.LastLatencyMS == nil || *node.LastLatencyMS != 123 {
+		t.Fatalf("node.LastLatencyMS = %v, want 123", node.LastLatencyMS)
+	}
+
+	select {
+	case nodeIDs := <-hookResults:
+		if len(nodeIDs) != 1 || nodeIDs[0] != existingID {
+			t.Fatalf("after-sync nodeIDs = %v, want [%d]", nodeIDs, existingID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for after-sync hook")
+	}
+}
+
+func newSubscriptionTestService(t *testing.T) (context.Context, *settings.Service, *Service) {
+	t.Helper()
+
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	cfg := config.App{
+		PanelHost:               "127.0.0.1",
+		PanelPort:               7890,
+		DataDir:                 tempDir,
+		DBPath:                  filepath.Join(tempDir, "app.db"),
+		RuntimeDir:              filepath.Join(tempDir, "runtime"),
+		ProdConfigPath:          filepath.Join(tempDir, "runtime", "mihomo-prod.yaml"),
+		ProbeConfigPath:         filepath.Join(tempDir, "runtime", "mihomo-probe.yaml"),
+		ProdControllerAddr:      "127.0.0.1:19090",
+		ProbeControllerAddr:     "127.0.0.1:19091",
+		ProbeMixedPort:          17891,
+		DefaultControllerSecret: "secret-token",
+	}
+	if err := config.EnsureDirs(cfg); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+
+	store, err := db.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	settingsSvc := settings.NewService(store, cfg)
+	hash, err := auth.HashPassword("admin")
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+	if err := settingsSvc.EnsureDefaults(ctx, hash); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+
+	svc := NewService(store, settingsSvc, events.NewBroker())
+	return ctx, settingsSvc, svc
 }

@@ -164,3 +164,43 @@ func TestBuildProbeInventoryConfigSanitizesLegacyTransportTypeOverride(t *testin
 		t.Fatalf("did not expect legacy transport type override in probe config:\n%s", config)
 	}
 }
+
+func TestBuildPublishBundleNormalizesUnsupportedLogLevelToInfo(t *testing.T) {
+	member := models.RuntimeNode{
+		SourceType:     "manual",
+		SourceNodeID:   10,
+		DisplayName:    "node-a",
+		Protocol:       "trojan",
+		Server:         "demo.example.com",
+		Port:           443,
+		Enabled:        true,
+		NormalizedJSON: `{"type":"trojan","server":"demo.example.com","port":443,"password":"secret"}`,
+	}
+
+	bundle, err := BuildPublishBundle(
+		"secret-token",
+		"127.0.0.1:19090",
+		"127.0.0.1:19091",
+		17891,
+		"https://www.gstatic.com/generate_204",
+		"verbose",
+		[]models.ProxyPool{{
+			ID:       1,
+			Name:     "demo",
+			Strategy: "round_robin",
+			Enabled:  true,
+		}},
+		map[int64][]models.RuntimeNode{1: {member}},
+		[]models.RuntimeNode{member},
+	)
+	if err != nil {
+		t.Fatalf("BuildPublishBundle() error = %v", err)
+	}
+
+	if !strings.Contains(string(bundle.ProdConfig), "log-level: info") {
+		t.Fatalf("expected prod config to fall back to info:\n%s", string(bundle.ProdConfig))
+	}
+	if !strings.Contains(string(bundle.ProbeConfig), "log-level: info") {
+		t.Fatalf("expected probe config to fall back to info:\n%s", string(bundle.ProbeConfig))
+	}
+}

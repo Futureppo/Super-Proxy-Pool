@@ -2,7 +2,6 @@ package settings
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -36,7 +35,7 @@ func (s *Service) EnsureDefaults(ctx context.Context, passwordHash string) error
 		latency_timeout_ms, speed_timeout_ms, latency_concurrency, speed_concurrency,
 		default_subscription_interval_sec, mihomo_controller_secret, failure_retry_count, log_level,
 		speed_max_bytes, created_at, updated_at
-	) VALUES (1, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 2, 'info', ?, ?, ?)`,
+	) VALUES (1, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?)`,
 		s.cfg.PanelHost,
 		s.cfg.PanelPort,
 		passwordHash,
@@ -48,6 +47,7 @@ func (s *Service) EnsureDefaults(ctx context.Context, passwordHash string) error
 		config.DefaultSpeedConcurrency(),
 		config.DefaultSubscriptionIntervalSec(),
 		s.cfg.DefaultControllerSecret,
+		config.NormalizeLogLevel(""),
 		config.DefaultSpeedMaxBytes(),
 		now,
 		now,
@@ -75,7 +75,7 @@ func (s *Service) Update(ctx context.Context, current models.Settings) (models.S
 	current.LatencyTestURL = strings.TrimSpace(current.LatencyTestURL)
 	current.SpeedTestURL = strings.TrimSpace(current.SpeedTestURL)
 	current.MihomoControllerSecret = strings.TrimSpace(current.MihomoControllerSecret)
-	current.LogLevel = normalizeLogLevel(current.LogLevel)
+	current.LogLevel = config.NormalizeLogLevel(current.LogLevel)
 	if current.SpeedMaxBytes <= 0 {
 		current.SpeedMaxBytes = config.DefaultSpeedMaxBytes()
 	}
@@ -166,33 +166,11 @@ func validateSettings(item models.Settings) error {
 	if item.FailureRetryCount < 0 {
 		return errors.New("failure_retry_count must be zero or greater")
 	}
-	if !isAllowedLogLevel(item.LogLevel) {
-		return fmt.Errorf("log_level must be one of trace, debug, info, warning, warn, error, silent")
+	if !config.IsAllowedLogLevel(item.LogLevel) {
+		return fmt.Errorf("log_level must be one of %s", strings.Join(config.AllowedLogLevels(), ", "))
 	}
 	if item.SpeedMaxBytes <= 0 {
 		return errors.New("speed_max_bytes must be greater than zero")
 	}
 	return nil
-}
-
-func normalizeLogLevel(level string) string {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "trace", "debug", "info", "warning", "warn", "error", "silent":
-		return strings.ToLower(strings.TrimSpace(level))
-	default:
-		return "info"
-	}
-}
-
-func isAllowedLogLevel(level string) bool {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "trace", "debug", "info", "warning", "warn", "error", "silent":
-		return true
-	default:
-		return false
-	}
-}
-
-func IsNotFound(err error) bool {
-	return err == sql.ErrNoRows
 }

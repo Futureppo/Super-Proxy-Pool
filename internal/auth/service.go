@@ -17,7 +17,6 @@ import (
 const SessionCookieName = "spp_session"
 
 type session struct {
-	Token     string
 	ExpiresAt time.Time
 }
 
@@ -58,7 +57,7 @@ func (s *Service) Login(ctx context.Context, password string) (string, error) {
 		return "", err
 	}
 	s.mu.Lock()
-	s.sessions[token] = session{Token: token, ExpiresAt: time.Now().Add(s.sessionMaxAge)}
+	s.sessions[token] = session{ExpiresAt: time.Now().Add(s.sessionMaxAge)}
 	s.mu.Unlock()
 	return token, nil
 }
@@ -99,10 +98,22 @@ func (s *Service) IsAuthenticated(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
+	now := time.Now()
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	current, ok := s.sessions[cookie.Value]
-	return ok && current.ExpiresAt.After(time.Now())
+	s.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	if current.ExpiresAt.After(now) {
+		return true
+	}
+	s.mu.Lock()
+	if current, ok := s.sessions[cookie.Value]; ok && !current.ExpiresAt.After(now) {
+		delete(s.sessions, cookie.Value)
+	}
+	s.mu.Unlock()
+	return false
 }
 
 func (s *Service) RequireAuth(next http.Handler) http.Handler {
@@ -112,7 +123,7 @@ func (s *Service) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 		if len(r.URL.Path) >= 5 && r.URL.Path[:5] == "/api/" {
-			http.Error(w, `{"success":false,"message":"unauthorized"}`, http.StatusUnauthorized)
+			writeUnauthorizedJSON(w)
 			return
 		}
 		http.Redirect(w, r, "/login", http.StatusFound)
@@ -147,4 +158,10 @@ func randomToken(size int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+func writeUnauthorizedJSON(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(`{"success":false,"message":"unauthorized"}`))
 }

@@ -311,11 +311,26 @@ textarea { resize: vertical; }
 .member-item {
   display: grid;
   gap: 4px;
-  grid-template-columns: 20px 1fr;
+  grid-template-columns: 1fr auto;
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 10px;
   background: white;
+}
+.member-main {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 20px 1fr;
+  align-items: start;
+}
+.member-weight {
+  display: grid;
+  gap: 6px;
+  align-content: center;
+  justify-items: end;
+}
+.member-weight input {
+  width: 72px;
 }
 
 .pool-connection {

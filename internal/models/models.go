@@ -114,18 +114,6 @@ type ProxyPoolMember struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-type ProbeHistory struct {
-	ID           int64     `json:"id"`
-	SourceType   string    `json:"source_type"`
-	SourceNodeID int64     `json:"source_node_id"`
-	TestType     string    `json:"test_type"`
-	Success      bool      `json:"success"`
-	LatencyMS    *int64    `json:"latency_ms"`
-	SpeedMbps    *float64  `json:"speed_mbps"`
-	ErrorMessage string    `json:"error_message"`
-	TestedAt     time.Time `json:"tested_at"`
-}
-
 type RuntimeNode struct {
 	SourceType     string `json:"source_type"`
 	SourceNodeID   int64  `json:"source_node_id"`

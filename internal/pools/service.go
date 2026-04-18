@@ -41,6 +41,8 @@ type MemberInput struct {
 	Weight       int    `json:"weight"`
 }
 
+const maxMemberWeight = 32
+
 func NewService(store *db.Store, settingsSvc *settings.Service, manualNodes *nodes.Service, subscriptions *subscriptions.Service, mihomoMgr *mihomo.Manager, broker *events.Broker) *Service {
 	return &Service{
 		store:         store,
@@ -187,9 +189,7 @@ func (s *Service) UpdateMembers(ctx context.Context, poolID int64, members []Mem
 		if item.SourceType == "" || item.SourceNodeID == 0 {
 			continue
 		}
-		if item.Weight <= 0 {
-			item.Weight = 1
-		}
+		item.Weight = normalizedMemberWeight(item.Weight)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO proxy_pool_members (pool_id, source_type, source_node_id, enabled, weight, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`, poolID, item.SourceType, item.SourceNodeID, boolToInt(item.Enabled), item.Weight, now, now); err != nil {
 			return err
@@ -218,31 +218,31 @@ func (s *Service) Publish(ctx context.Context, poolID int64) error {
 	s.events.Publish("pools.publish.started", map[string]any{"pool_id": poolID})
 	settingsRow, err := s.settingsSvc.Get(ctx)
 	if err != nil {
-		s.markPublishFailure(ctx, err)
+		s.markPublishFailure(ctx, poolID, err)
 		return err
 	}
 	poolList, err := s.List(ctx)
 	if err != nil {
-		s.markPublishFailure(ctx, err)
+		s.markPublishFailure(ctx, poolID, err)
 		return err
 	}
 	manualInventory, err := s.manualNodes.AllRuntimeNodes(ctx)
 	if err != nil {
-		s.markPublishFailure(ctx, err)
+		s.markPublishFailure(ctx, poolID, err)
 		return err
 	}
 	subscriptionInventory, err := s.subscriptions.AllRuntimeNodes(ctx)
 	if err != nil {
-		s.markPublishFailure(ctx, err)
+		s.markPublishFailure(ctx, poolID, err)
 		return err
 	}
 	inventory := append(manualInventory, subscriptionInventory...)
 
 	members := make(map[int64][]models.RuntimeNode)
 	for _, pool := range poolList {
-		currentMembers, err := s.runtimeMembersForPool(ctx, pool.ID)
+		currentMembers, err := s.runtimeMembersForPool(ctx, pool)
 		if err != nil {
-			s.markPublishFailure(ctx, err)
+			s.markPublishFailure(ctx, poolID, err)
 			return err
 		}
 		members[pool.ID] = currentMembers
@@ -260,24 +260,18 @@ func (s *Service) Publish(ctx context.Context, poolID int64) error {
 		inventory,
 	)
 	if err != nil {
-		s.markPublishFailure(ctx, err)
+		s.markPublishFailure(ctx, poolID, err)
 		return err
 	}
 	if err := s.mihomo.ApplyConfigBundle(ctx, bundle.ProdConfig, bundle.ProbeConfig, settingsRow.MihomoControllerSecret); err != nil {
-		s.markPublishFailure(ctx, err)
+		s.markPublishFailure(ctx, poolID, err)
 		return err
 	}
-	for _, pool := range poolList {
-		_, err = s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET last_published_at = ?, last_publish_status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
-			time.Now().UTC(), "published", "", time.Now().UTC(), pool.ID)
-		if err != nil {
-			break
-		}
+	if err := s.markPublishSuccess(ctx, poolID, poolList); err != nil {
+		return err
 	}
-	if err == nil {
-		s.events.Publish("pools.published", map[string]string{"status": "published"})
-	}
-	return err
+	s.events.Publish("pools.published", map[string]string{"status": "published"})
+	return nil
 }
 
 func (s *Service) validateUpsertRequest(ctx context.Context, currentID int64, req UpsertRequest) error {
@@ -333,8 +327,8 @@ func (s *Service) LookupPoolByAuth(ctx context.Context, username, password strin
 	return &item, nil
 }
 
-func (s *Service) runtimeMembersForPool(ctx context.Context, poolID int64) ([]models.RuntimeNode, error) {
-	memberRows, err := s.store.DB.QueryContext(ctx, `SELECT source_type, source_node_id, enabled FROM proxy_pool_members WHERE pool_id = ?`, poolID)
+func (s *Service) runtimeMembersForPool(ctx context.Context, pool models.ProxyPool) ([]models.RuntimeNode, error) {
+	memberRows, err := s.store.DB.QueryContext(ctx, `SELECT source_type, source_node_id, enabled, weight FROM proxy_pool_members WHERE pool_id = ?`, pool.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -342,16 +336,18 @@ func (s *Service) runtimeMembersForPool(ctx context.Context, poolID int64) ([]mo
 		SourceType   string
 		SourceNodeID int64
 		Enabled      bool
+		Weight       int
 	}
 	var refs []memberRef
 	for memberRows.Next() {
 		var ref memberRef
 		var enabled int
-		if err := memberRows.Scan(&ref.SourceType, &ref.SourceNodeID, &enabled); err != nil {
+		if err := memberRows.Scan(&ref.SourceType, &ref.SourceNodeID, &enabled, &ref.Weight); err != nil {
 			memberRows.Close()
 			return nil, err
 		}
 		ref.Enabled = enabled == 1
+		ref.Weight = normalizedMemberWeight(ref.Weight)
 		refs = append(refs, ref)
 	}
 	if err := memberRows.Close(); err != nil {
@@ -366,24 +362,76 @@ func (s *Service) runtimeMembersForPool(ctx context.Context, poolID int64) ([]mo
 		if !ref.Enabled {
 			continue
 		}
+		copies := memberCopiesForStrategy(pool.Strategy, ref.Weight)
 		if ref.SourceType == "manual" {
 			node, err := s.manualNodes.NodeBySource(ctx, ref.SourceNodeID)
 			if err == nil {
-				result = append(result, node)
+				for range copies {
+					result = append(result, node)
+				}
 			}
 			continue
 		}
 		node, err := s.subscriptions.NodeBySource(ctx, ref.SourceNodeID)
 		if err == nil {
-			result = append(result, node)
+			for range copies {
+				result = append(result, node)
+			}
 		}
 	}
 	return result, nil
 }
 
-func (s *Service) markPublishFailure(ctx context.Context, cause error) {
-	_, _ = s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET last_publish_status = ?, last_error = ?, updated_at = ?`,
-		"failed", cause.Error(), time.Now().UTC())
+func normalizedMemberWeight(weight int) int {
+	if weight < 1 {
+		return 1
+	}
+	if weight > maxMemberWeight {
+		return maxMemberWeight
+	}
+	return weight
+}
+
+func memberCopiesForStrategy(strategy string, weight int) int {
+	switch defaultStrategy(strategy) {
+	case "round_robin", "sticky":
+		return normalizedMemberWeight(weight)
+	default:
+		return 1
+	}
+}
+
+func (s *Service) markPublishSuccess(ctx context.Context, poolID int64, poolList []models.ProxyPool) error {
+	now := time.Now().UTC()
+	if poolID != 0 {
+		_, err := s.store.DB.ExecContext(ctx, `UPDATE proxy_pools
+			SET last_published_at = ?, last_publish_status = ?, last_error = ?, updated_at = ?
+			WHERE id = ?`,
+			now, "published", "", now, poolID,
+		)
+		return err
+	}
+	for _, pool := range poolList {
+		if _, err := s.store.DB.ExecContext(ctx, `UPDATE proxy_pools
+			SET last_published_at = ?, last_publish_status = ?, last_error = ?, updated_at = ?
+			WHERE id = ?`,
+			now, "published", "", now, pool.ID,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) markPublishFailure(ctx context.Context, poolID int64, cause error) {
+	now := time.Now().UTC()
+	if poolID == 0 {
+		_, _ = s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET last_publish_status = ?, last_error = ?, updated_at = ?`,
+			"failed", cause.Error(), now)
+	} else {
+		_, _ = s.store.DB.ExecContext(ctx, `UPDATE proxy_pools SET last_publish_status = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+			"failed", cause.Error(), now, poolID)
+	}
 	s.events.Publish("pools.publish.failed", map[string]string{"error": cause.Error()})
 }
 

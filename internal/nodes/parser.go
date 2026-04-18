@@ -152,12 +152,18 @@ func parseVMess(raw string) (ParsedNode, error) {
 	if err := json.Unmarshal(decoded, &data); err != nil {
 		return ParsedNode{}, err
 	}
-	server := fmt.Sprint(data["add"])
-	name := fmt.Sprint(data["ps"])
+	server := strings.TrimSpace(stringValue(data["add"]))
+	if server == "" {
+		return ParsedNode{}, errors.New("vmess server is required")
+	}
+	name := strings.TrimSpace(stringValue(data["ps"]))
 	if name == "" {
 		name = server
 	}
-	port, _ := strconv.Atoi(fmt.Sprint(data["port"]))
+	port, err := toInt(data["port"])
+	if err != nil || !isValidPort(port) {
+		return ParsedNode{}, errors.New("vmess port must be between 1 and 65535")
+	}
 	data["name"] = name
 	data["type"] = "vmess"
 	data["server"] = server
@@ -177,8 +183,23 @@ func parseSimpleURLNode(protocol, raw string) (ParsedNode, error) {
 	if err != nil {
 		return ParsedNode{}, err
 	}
-	host := u.Hostname()
-	port, _ := strconv.Atoi(u.Port())
+	if !strings.EqualFold(u.Scheme, protocol) {
+		return ParsedNode{}, fmt.Errorf("invalid %s scheme", protocol)
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return ParsedNode{}, fmt.Errorf("%s server is required", protocol)
+	}
+	if strings.TrimSpace(u.Port()) == "" {
+		return ParsedNode{}, fmt.Errorf("%s port is required", protocol)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || !isValidPort(port) {
+		return ParsedNode{}, fmt.Errorf("%s port must be between 1 and 65535", protocol)
+	}
+	if u.User == nil || strings.TrimSpace(u.User.Username()) == "" {
+		return ParsedNode{}, fmt.Errorf("%s credential is required", protocol)
+	}
 	name := u.Fragment
 	if name == "" {
 		name = host
@@ -296,4 +317,19 @@ func toInt(v any) (int, error) {
 	default:
 		return 0, fmt.Errorf("unsupported numeric type %T", v)
 	}
+}
+
+func stringValue(v any) string {
+	switch value := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
+func isValidPort(port int) bool {
+	return port >= 1 && port <= 65535
 }

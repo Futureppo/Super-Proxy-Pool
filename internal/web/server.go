@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -147,6 +148,7 @@ func (a *App) Router() (http.Handler, error) {
 			api.Get("/subscriptions/{id}", a.handleSubscriptionGet)
 			api.Put("/subscriptions/{id}", a.handleSubscriptionUpdate)
 			api.Delete("/subscriptions/{id}", a.handleSubscriptionDelete)
+			api.Post("/subscriptions/{id}/toggle", a.handleSubscriptionToggle)
 			api.Post("/subscriptions/{id}/sync", a.handleSubscriptionSync)
 			api.Get("/subscriptions/{id}/nodes", a.handleSubscriptionNodes)
 			api.Post("/subscriptions/{id}/nodes/{nodeID}/latency-test", a.handleSubscriptionNodeLatency)
@@ -208,7 +210,7 @@ func (a *App) renderPage(meta pageMeta) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var subscriptionID int64
 		if meta.Page == "subscription-detail" {
-			subscriptionID = parseIDParam(r, "id")
+			subscriptionID, _ = parseIDParam(r, "id")
 		}
 		_ = a.appTmpl.ExecuteTemplate(w, "base", PageData{
 			Title:              meta.Heading + " - Super-Proxy-Pool",
@@ -288,7 +290,11 @@ func (a *App) handleSubscriptionCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSubscriptionGet(w http.ResponseWriter, r *http.Request) {
-	item, err := a.subscriptions.Get(r.Context(), parseIDParam(r, "id"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.subscriptions.Get(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -301,7 +307,11 @@ func (a *App) handleSubscriptionUpdate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	item, err := a.subscriptions.Update(r.Context(), parseIDParam(r, "id"), req)
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.subscriptions.Update(r.Context(), id, req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -310,7 +320,11 @@ func (a *App) handleSubscriptionUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
-	if err := a.subscriptions.Delete(r.Context(), parseIDParam(r, "id")); err != nil {
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.subscriptions.Delete(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -318,8 +332,25 @@ func (a *App) handleSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: map[string]bool{"deleted": true}})
 }
 
+func (a *App) handleSubscriptionToggle(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.subscriptions.Toggle(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: item})
+}
+
 func (a *App) handleSubscriptionSync(w http.ResponseWriter, r *http.Request) {
-	item, err := a.subscriptions.Sync(r.Context(), parseIDParam(r, "id"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.subscriptions.Sync(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -328,7 +359,11 @@ func (a *App) handleSubscriptionSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSubscriptionNodes(w http.ResponseWriter, r *http.Request) {
-	items, err := a.subscriptions.ListNodes(r.Context(), parseIDParam(r, "id"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	items, err := a.subscriptions.ListNodes(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -337,7 +372,11 @@ func (a *App) handleSubscriptionNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSubscriptionNodeLatency(w http.ResponseWriter, r *http.Request) {
-	if err := a.probe.EnqueueLatency("subscription", parseIDParam(r, "nodeID")); err != nil {
+	nodeID, ok := requireIDParam(w, r, "nodeID")
+	if !ok {
+		return
+	}
+	if err := a.probe.EnqueueLatency("subscription", nodeID); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -345,7 +384,11 @@ func (a *App) handleSubscriptionNodeLatency(w http.ResponseWriter, r *http.Reque
 }
 
 func (a *App) handleSubscriptionNodeSpeed(w http.ResponseWriter, r *http.Request) {
-	if err := a.probe.EnqueueSpeed("subscription", parseIDParam(r, "nodeID")); err != nil {
+	nodeID, ok := requireIDParam(w, r, "nodeID")
+	if !ok {
+		return
+	}
+	if err := a.probe.EnqueueSpeed("subscription", nodeID); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -353,7 +396,15 @@ func (a *App) handleSubscriptionNodeSpeed(w http.ResponseWriter, r *http.Request
 }
 
 func (a *App) handleSubscriptionNodeToggle(w http.ResponseWriter, r *http.Request) {
-	item, err := a.subscriptions.ToggleNode(r.Context(), parseIDParam(r, "id"), parseIDParam(r, "nodeID"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	nodeID, ok := requireIDParam(w, r, "nodeID")
+	if !ok {
+		return
+	}
+	item, err := a.subscriptions.ToggleNode(r.Context(), id, nodeID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -392,7 +443,11 @@ func (a *App) handleManualNodeCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleManualNodeGet(w http.ResponseWriter, r *http.Request) {
-	item, err := a.nodes.Get(r.Context(), parseIDParam(r, "id"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.nodes.Get(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -405,7 +460,11 @@ func (a *App) handleManualNodeUpdate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	item, err := a.nodes.Update(r.Context(), parseIDParam(r, "id"), req)
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.nodes.Update(r.Context(), id, req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -415,7 +474,11 @@ func (a *App) handleManualNodeUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleManualNodeDelete(w http.ResponseWriter, r *http.Request) {
-	if err := a.nodes.Delete(r.Context(), parseIDParam(r, "id")); err != nil {
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.nodes.Delete(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -424,7 +487,11 @@ func (a *App) handleManualNodeDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleManualNodeLatency(w http.ResponseWriter, r *http.Request) {
-	if err := a.probe.EnqueueLatency("manual", parseIDParam(r, "id")); err != nil {
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.probe.EnqueueLatency("manual", id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -432,7 +499,11 @@ func (a *App) handleManualNodeLatency(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleManualNodeSpeed(w http.ResponseWriter, r *http.Request) {
-	if err := a.probe.EnqueueSpeed("manual", parseIDParam(r, "id")); err != nil {
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.probe.EnqueueSpeed("manual", id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -440,7 +511,11 @@ func (a *App) handleManualNodeSpeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleManualNodeToggle(w http.ResponseWriter, r *http.Request) {
-	item, err := a.nodes.Toggle(r.Context(), parseIDParam(r, "id"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.nodes.Toggle(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -482,7 +557,11 @@ func (a *App) handlePoolCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePoolGet(w http.ResponseWriter, r *http.Request) {
-	item, err := a.pools.Get(r.Context(), parseIDParam(r, "id"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.pools.Get(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -495,7 +574,11 @@ func (a *App) handlePoolUpdate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	item, err := a.pools.Update(r.Context(), parseIDParam(r, "id"), req)
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.pools.Update(r.Context(), id, req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -505,7 +588,11 @@ func (a *App) handlePoolUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePoolDelete(w http.ResponseWriter, r *http.Request) {
-	if err := a.pools.Delete(r.Context(), parseIDParam(r, "id")); err != nil {
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.pools.Delete(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -514,7 +601,11 @@ func (a *App) handlePoolDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePoolToggle(w http.ResponseWriter, r *http.Request) {
-	item, err := a.pools.Toggle(r.Context(), parseIDParam(r, "id"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	item, err := a.pools.Toggle(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -524,7 +615,11 @@ func (a *App) handlePoolToggle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePoolPublish(w http.ResponseWriter, r *http.Request) {
-	if err := a.pools.Publish(r.Context(), parseIDParam(r, "id")); err != nil {
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.pools.Publish(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -532,7 +627,11 @@ func (a *App) handlePoolPublish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handlePoolMembers(w http.ResponseWriter, r *http.Request) {
-	members, err := a.pools.GetMembers(r.Context(), parseIDParam(r, "id"))
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	members, err := a.pools.GetMembers(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -555,7 +654,11 @@ func (a *App) handlePoolMembersUpdate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := a.pools.UpdateMembers(r.Context(), parseIDParam(r, "id"), req.Members); err != nil {
+	id, ok := requireIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.pools.UpdateMembers(r.Context(), id, req.Members); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -704,9 +807,22 @@ func writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Message: err.Error()})
 }
 
-func parseIDParam(r *http.Request, key string) int64 {
-	value, _ := strconv.ParseInt(chi.URLParam(r, key), 10, 64)
-	return value
+func parseIDParam(r *http.Request, key string) (int64, error) {
+	value := chi.URLParam(r, key)
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid %s id", key)
+	}
+	return id, nil
+}
+
+func requireIDParam(w http.ResponseWriter, r *http.Request, key string) (int64, bool) {
+	id, err := parseIDParam(r, key)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Message: err.Error()})
+		return 0, false
+	}
+	return id, true
 }
 
 func stringifyErrors(errs []error) []string {

@@ -59,3 +59,45 @@ func TestParseSimpleURLNodePreservesProtocolType(t *testing.T) {
 		t.Fatalf("normalized network = %#v, want %q", got, "tcp")
 	}
 }
+
+func TestParseVMessNodeRejectsMalformedPayload(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "missing server",
+			payload: `{"v":"2","ps":"vmess-node","port":"443","id":"uuid"}`,
+		},
+		{
+			name:    "invalid port",
+			payload: `{"v":"2","ps":"vmess-node","add":"vmess.example.com","port":"0","id":"uuid"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseNodeURI("vmess://" + base64.StdEncoding.EncodeToString([]byte(tc.payload)))
+			if err == nil {
+				t.Fatalf("ParseNodeURI() error = nil, want malformed vmess error")
+			}
+		})
+	}
+}
+
+func TestParseSimpleURLNodeRejectsMalformedURL(t *testing.T) {
+	cases := []string{
+		"vless://uuid@example.org#missing-port",
+		"vless://@example.org:443#missing-credential",
+		"trojan://password@example.org:70000#invalid-port",
+	}
+
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			_, err := ParseNodeURI(raw)
+			if err == nil {
+				t.Fatalf("ParseNodeURI(%q) error = nil, want validation error", raw)
+			}
+		})
+	}
+}

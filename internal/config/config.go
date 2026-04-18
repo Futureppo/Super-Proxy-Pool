@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -25,8 +26,11 @@ const (
 	defaultProdControllerAddr            = "127.0.0.1:19090"
 	defaultProbeMixedPort                = 17891
 	defaultSessionMaxAgeSec              = 86400
+	defaultLogLevel                      = "info"
 	defaultSpeedMaxBytes           int64 = 5000000
 )
+
+var allowedLogLevels = []string{"trace", "debug", "info", "warning", "warn", "error", "silent"}
 
 type App struct {
 	PanelHost               string
@@ -80,8 +84,6 @@ func EnsureDirs(cfg App) error {
 	return nil
 }
 
-func DefaultPanelHost() string            { return defaultPanelHost }
-func DefaultPanelPort() int               { return defaultPanelPort }
 func DefaultLatencyURL() string           { return defaultLatencyURL }
 func DefaultLatencyTimeoutMS() int        { return defaultLatencyTimeoutMS }
 func DefaultLatencyConcurrency() int      { return defaultLatencyConcurrency }
@@ -90,6 +92,11 @@ func DefaultSpeedTimeoutMS() int          { return defaultSpeedTimeoutMS }
 func DefaultSpeedConcurrency() int        { return defaultSpeedConcurrency }
 func DefaultSubscriptionIntervalSec() int { return defaultSubscriptionIntervalSec }
 func DefaultSpeedMaxBytes() int64         { return defaultSpeedMaxBytes }
+
+func AllowedLogLevels() []string {
+	return append([]string(nil), allowedLogLevels...)
+}
+
 func MihomoInstallDir(dataDir string) string {
 	return filepath.Join(dataDir, "bin")
 }
@@ -159,7 +166,7 @@ func managedMihomoBinaryPath(dataDir string) string {
 	if err != nil {
 		return ""
 	}
-	return string(bytesTrimSpace(content))
+	return strings.TrimSpace(string(content))
 }
 
 func mihomoBinaryCandidates(baseDir, dataDir, goos, goarch string) []string {
@@ -246,33 +253,32 @@ func uniqueStrings(values []string) []string {
 	return result
 }
 
-func bytesTrimSpace(value []byte) []byte {
-	start := 0
-	end := len(value)
-	for start < end {
-		switch value[start] {
-		case ' ', '\n', '\r', '\t':
-			start++
-		default:
-			goto trimEnd
-		}
-	}
-trimEnd:
-	for end > start {
-		switch value[end-1] {
-		case ' ', '\n', '\r', '\t':
-			end--
-		default:
-			return value[start:end]
-		}
-	}
-	return value[start:end]
-}
-
 func randomHex(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
 		return "super-proxy-pool-secret"
 	}
 	return hex.EncodeToString(buf)
+}
+
+func NormalizeLogLevel(level string) string {
+	if normalized, ok := parseLogLevel(level); ok {
+		return normalized
+	}
+	return defaultLogLevel
+}
+
+func IsAllowedLogLevel(level string) bool {
+	_, ok := parseLogLevel(level)
+	return ok
+}
+
+func parseLogLevel(level string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(level))
+	for _, allowed := range allowedLogLevels {
+		if normalized == allowed {
+			return normalized, true
+		}
+	}
+	return "", false
 }

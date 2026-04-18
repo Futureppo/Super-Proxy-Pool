@@ -46,6 +46,16 @@ type SyncOutcome struct {
 	Errors       []string `json:"errors"`
 }
 
+type storedSubscriptionNode struct {
+	ID             int64
+	DisplayName    string
+	Protocol       string
+	Server         string
+	Port           int
+	RawPayload     string
+	NormalizedJSON string
+}
+
 func NewService(store *db.Store, settingsSvc *settings.Service, broker *events.Broker) *Service {
 	return &Service{
 		store:       store,
@@ -156,18 +166,15 @@ func (s *Service) Get(ctx context.Context, id int64) (models.Subscription, error
 }
 
 func (s *Service) Create(ctx context.Context, req UpsertRequest) (models.Subscription, error) {
-	if req.SyncIntervalSec <= 0 {
-		st, err := s.settingsSvc.Get(ctx)
-		if err != nil {
-			return models.Subscription{}, err
-		}
-		req.SyncIntervalSec = st.DefaultSubscriptionIntervalSec
+	req, err := s.normalizeUpsertRequest(ctx, req)
+	if err != nil {
+		return models.Subscription{}, err
 	}
 	now := time.Now().UTC()
 	res, err := s.store.DB.ExecContext(ctx, `INSERT INTO subscriptions (
 		name, url, headers_json, enabled, sync_interval_sec, created_at, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		req.Name, req.URL, defaultJSON(req.HeadersJSON), boolToInt(req.Enabled), req.SyncIntervalSec, now, now,
+		req.Name, req.URL, req.HeadersJSON, boolToInt(req.Enabled), req.SyncIntervalSec, now, now,
 	)
 	if err != nil {
 		return models.Subscription{}, err
@@ -181,8 +188,12 @@ func (s *Service) Create(ctx context.Context, req UpsertRequest) (models.Subscri
 }
 
 func (s *Service) Update(ctx context.Context, id int64, req UpsertRequest) (models.Subscription, error) {
-	_, err := s.store.DB.ExecContext(ctx, `UPDATE subscriptions SET name = ?, url = ?, headers_json = ?, enabled = ?, sync_interval_sec = ?, updated_at = ?
-		WHERE id = ?`, req.Name, req.URL, defaultJSON(req.HeadersJSON), boolToInt(req.Enabled), req.SyncIntervalSec, time.Now().UTC(), id)
+	req, err := s.normalizeUpsertRequest(ctx, req)
+	if err != nil {
+		return models.Subscription{}, err
+	}
+	_, err = s.store.DB.ExecContext(ctx, `UPDATE subscriptions SET name = ?, url = ?, headers_json = ?, enabled = ?, sync_interval_sec = ?, updated_at = ?
+		WHERE id = ?`, req.Name, req.URL, req.HeadersJSON, boolToInt(req.Enabled), req.SyncIntervalSec, time.Now().UTC(), id)
 	if err != nil {
 		return models.Subscription{}, err
 	}
@@ -199,6 +210,19 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 		s.events.Publish("subscriptions.deleted", map[string]int64{"id": id})
 	}
 	return err
+}
+
+func (s *Service) Toggle(ctx context.Context, id int64) (models.Subscription, error) {
+	current, err := s.Get(ctx, id)
+	if err != nil {
+		return models.Subscription{}, err
+	}
+	_, err = s.store.DB.ExecContext(ctx, `UPDATE subscriptions SET enabled = ?, updated_at = ? WHERE id = ?`,
+		boolToInt(!current.Enabled), time.Now().UTC(), id)
+	if err != nil {
+		return models.Subscription{}, err
+	}
+	return s.Get(ctx, id)
 }
 
 func (s *Service) ListNodes(ctx context.Context, subscriptionID int64) ([]models.SubscriptionNode, error) {
@@ -316,16 +340,43 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM subscription_nodes WHERE subscription_id = ?`, sub.ID); err != nil {
+	existingNodes, err := loadStoredSubscriptionNodes(ctx, tx, sub.ID)
+	if err != nil {
 		return SyncOutcome{}, err
 	}
+
+	existingByFingerprint := make(map[string][]storedSubscriptionNode, len(existingNodes))
+	for _, item := range existingNodes {
+		fingerprint := subscriptionNodeFingerprint(item.Protocol, item.Server, item.Port, item.NormalizedJSON)
+		existingByFingerprint[fingerprint] = append(existingByFingerprint[fingerprint], item)
+	}
+
 	now := time.Now().UTC()
-	var createdIDs []int64
+	var syncedNodeIDs []int64
+	matchedIDs := make(map[int64]struct{}, len(existingNodes))
 	for _, item := range result.Nodes {
+		normalizedJSON := nodes.NormalizeJSON(item.Normalized)
+		fingerprint := subscriptionNodeFingerprint(item.Protocol, item.Server, item.Port, normalizedJSON)
+		if existing, ok := popStoredSubscriptionNode(existingByFingerprint[fingerprint], item.RawPayload); ok {
+			existingByFingerprint[fingerprint] = removeStoredSubscriptionNode(existingByFingerprint[fingerprint], existing.ID)
+			matchedIDs[existing.ID] = struct{}{}
+			syncedNodeIDs = append(syncedNodeIDs, existing.ID)
+			if needsStoredSubscriptionNodeUpdate(existing, item, normalizedJSON) {
+				if _, err := tx.ExecContext(ctx, `UPDATE subscription_nodes
+					SET display_name = ?, protocol = ?, server = ?, port = ?, raw_payload = ?, normalized_json = ?, updated_at = ?
+					WHERE id = ? AND subscription_id = ?`,
+					item.DisplayName, item.Protocol, item.Server, item.Port, item.RawPayload, normalizedJSON, now, existing.ID, sub.ID,
+				); err != nil {
+					return SyncOutcome{}, err
+				}
+			}
+			continue
+		}
+
 		res, err := tx.ExecContext(ctx, `INSERT INTO subscription_nodes (
 			subscription_id, display_name, protocol, server, port, raw_payload, normalized_json, enabled, last_status, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'unknown', ?, ?)`,
-			sub.ID, item.DisplayName, item.Protocol, item.Server, item.Port, item.RawPayload, nodes.NormalizeJSON(item.Normalized), now, now,
+			sub.ID, item.DisplayName, item.Protocol, item.Server, item.Port, item.RawPayload, normalizedJSON, now, now,
 		)
 		if err != nil {
 			return SyncOutcome{}, err
@@ -334,7 +385,15 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 		if err != nil {
 			return SyncOutcome{}, err
 		}
-		createdIDs = append(createdIDs, nodeID)
+		syncedNodeIDs = append(syncedNodeIDs, nodeID)
+	}
+	for _, item := range existingNodes {
+		if _, ok := matchedIDs[item.ID]; ok {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM subscription_nodes WHERE id = ? AND subscription_id = ?`, item.ID, sub.ID); err != nil {
+			return SyncOutcome{}, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE subscriptions SET last_sync_at = ?, last_sync_status = ?, last_error = ?, etag = ?, last_modified = ?, updated_at = ?
 		WHERE id = ?`, now, "ok", errorSummary(result.Errors), resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"), now, sub.ID); err != nil {
@@ -354,8 +413,8 @@ func (s *Service) Sync(ctx context.Context, id int64) (SyncOutcome, error) {
 	s.mu.Lock()
 	hooks := append([]func(context.Context, int64, []int64){}, s.afterSyncHooks...)
 	s.mu.Unlock()
-	if len(createdIDs) > 0 {
-		nodeIDs := append([]int64(nil), createdIDs...)
+	if len(syncedNodeIDs) > 0 {
+		nodeIDs := append([]int64(nil), syncedNodeIDs...)
 		for _, hook := range hooks {
 			if hook == nil {
 				continue
@@ -543,11 +602,133 @@ func parseHeaders(raw string) map[string]string {
 	return headers
 }
 
+func normalizeHeadersJSON(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "{}", nil
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", fmt.Errorf("headers_json must be a JSON object with string values")
+	}
+	if payload == nil && raw != "{}" {
+		return "", fmt.Errorf("headers_json must be a JSON object with string values")
+	}
+
+	headers := make(map[string]string, len(payload))
+	for key, value := range payload {
+		var headerValue string
+		if err := json.Unmarshal(value, &headerValue); err != nil {
+			return "", fmt.Errorf("headers_json must be a JSON object with string values")
+		}
+		headers[key] = headerValue
+	}
+
+	data, err := json.Marshal(headers)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 func defaultJSON(raw string) string {
 	if strings.TrimSpace(raw) == "" {
 		return "{}"
 	}
 	return raw
+}
+
+func (s *Service) normalizeUpsertRequest(ctx context.Context, req UpsertRequest) (UpsertRequest, error) {
+	req.Name = strings.TrimSpace(req.Name)
+	req.URL = strings.TrimSpace(req.URL)
+
+	headersJSON, err := normalizeHeadersJSON(req.HeadersJSON)
+	if err != nil {
+		return UpsertRequest{}, err
+	}
+	req.HeadersJSON = headersJSON
+
+	if req.SyncIntervalSec <= 0 {
+		st, err := s.settingsSvc.Get(ctx)
+		if err != nil {
+			return UpsertRequest{}, err
+		}
+		req.SyncIntervalSec = st.DefaultSubscriptionIntervalSec
+	}
+	return req, nil
+}
+
+func loadStoredSubscriptionNodes(ctx context.Context, tx *sql.Tx, subscriptionID int64) ([]storedSubscriptionNode, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, display_name, protocol, server, port, raw_payload, normalized_json
+		FROM subscription_nodes WHERE subscription_id = ? ORDER BY id ASC`, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []storedSubscriptionNode
+	for rows.Next() {
+		var item storedSubscriptionNode
+		if err := rows.Scan(&item.ID, &item.DisplayName, &item.Protocol, &item.Server, &item.Port, &item.RawPayload, &item.NormalizedJSON); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func subscriptionNodeFingerprint(protocol, server string, port int, normalizedJSON string) string {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(normalizedJSON)), &payload); err != nil || payload == nil {
+		payload = make(map[string]any)
+	}
+	if protocol != "" {
+		payload["type"] = protocol
+	}
+	if server != "" {
+		payload["server"] = server
+	}
+	if port > 0 {
+		payload["port"] = port
+	}
+	delete(payload, "name")
+	fingerprint, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf("%s|%s|%d|%s", protocol, server, port, strings.TrimSpace(normalizedJSON))
+	}
+	return string(fingerprint)
+}
+
+func popStoredSubscriptionNode(items []storedSubscriptionNode, rawPayload string) (storedSubscriptionNode, bool) {
+	if len(items) == 0 {
+		return storedSubscriptionNode{}, false
+	}
+	for _, item := range items {
+		if item.RawPayload == rawPayload {
+			return item, true
+		}
+	}
+	return items[0], true
+}
+
+func removeStoredSubscriptionNode(items []storedSubscriptionNode, id int64) []storedSubscriptionNode {
+	for index, item := range items {
+		if item.ID != id {
+			continue
+		}
+		return append(items[:index], items[index+1:]...)
+	}
+	return items
+}
+
+func needsStoredSubscriptionNodeUpdate(existing storedSubscriptionNode, next nodes.ParsedNode, normalizedJSON string) bool {
+	return existing.DisplayName != next.DisplayName ||
+		existing.Protocol != next.Protocol ||
+		existing.Server != next.Server ||
+		existing.Port != next.Port ||
+		existing.RawPayload != next.RawPayload ||
+		existing.NormalizedJSON != normalizedJSON
 }
 
 func (s *Service) doWithRetry(req *http.Request, retryCount int) (*http.Response, error) {

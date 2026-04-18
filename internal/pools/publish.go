@@ -62,7 +62,7 @@ func buildProdConfig(secret, controller, testURL, logLevel string, poolList []mo
 
 	root := map[string]any{
 		"mode":                "rule",
-		"log-level":           normalizeLogLevel(logLevel),
+		"log-level":           config.NormalizeLogLevel(logLevel),
 		"allow-lan":           true,
 		"external-controller": controller,
 		"secret":              secret,
@@ -158,7 +158,7 @@ func buildProbeConfig(secret, controller string, probeMixedPort int, logLevel st
 
 	root := map[string]any{
 		"mode":                "global",
-		"log-level":           normalizeLogLevel(logLevel),
+		"log-level":           config.NormalizeLogLevel(logLevel),
 		"allow-lan":           false,
 		"mixed-port":          probeMixedPort,
 		"external-controller": controller,
@@ -286,15 +286,6 @@ func probeSpeedSlotGroupName(slotIndex int) string {
 
 func probeSpeedSlotPort(probeMixedPort, slotIndex int) int {
 	return probeMixedPort + slotIndex + 1
-}
-
-func normalizeLogLevel(level string) string {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "trace", "debug", "info", "warning", "warn", "error", "silent":
-		return strings.ToLower(strings.TrimSpace(level))
-	default:
-		return "info"
-	}
 }
 
 func shouldAttachHealthCheck(pool models.ProxyPool) bool {

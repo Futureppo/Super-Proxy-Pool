@@ -2,10 +2,12 @@ package probe
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +37,7 @@ type Service struct {
 	speedQueue    chan task
 	speedSlots    chan int
 	probeConfigMu sync.Mutex
+	probeCacheKey string
 
 	activeLatency            int32
 	activeSpeed              int32
@@ -335,6 +338,10 @@ func (s *Service) runSpeed(ctx context.Context, item task) {
 }
 
 func (s *Service) syncProbeInventoryAndGetNode(ctx context.Context, sourceType string, sourceNodeID int64, secret, logLevel string, slotIndex int) (models.RuntimeNode, error) {
+	node, err := s.lookupRuntimeNode(ctx, sourceType, sourceNodeID)
+	if err != nil {
+		return models.RuntimeNode{}, err
+	}
 	manualInventory, err := s.manualNodes.AllRuntimeNodes(ctx)
 	if err != nil {
 		return models.RuntimeNode{}, err
@@ -344,10 +351,6 @@ func (s *Service) syncProbeInventoryAndGetNode(ctx context.Context, sourceType s
 		return models.RuntimeNode{}, err
 	}
 	inventory := append(manualInventory, subscriptionInventory...)
-	node, err := s.lookupRuntimeNode(ctx, sourceType, sourceNodeID)
-	if err != nil {
-		return models.RuntimeNode{}, err
-	}
 
 	s.probeConfigMu.Lock()
 	defer s.probeConfigMu.Unlock()
@@ -355,11 +358,18 @@ func (s *Service) syncProbeInventoryAndGetNode(ctx context.Context, sourceType s
 	if slotIndex >= 0 {
 		s.speedSlotSelections[slotIndex] = runtimeNodeName(node)
 	}
-	if err := s.applyProbeInventory(ctx, secret, logLevel, inventory); err != nil {
+	applied, err := s.ensureProbeInventoryApplied(ctx, secret, logLevel, inventory)
+	if err != nil {
 		if slotIndex >= 0 {
 			delete(s.speedSlotSelections, slotIndex)
 		}
 		return models.RuntimeNode{}, err
+	}
+	if slotIndex >= 0 && !applied {
+		if err := s.applySpeedSlotSelection(ctx, secret, slotIndex); err != nil {
+			delete(s.speedSlotSelections, slotIndex)
+			return models.RuntimeNode{}, err
+		}
 	}
 	return node, nil
 }
@@ -380,6 +390,29 @@ func (s *Service) applyProbeInventory(ctx context.Context, secret, logLevel stri
 		return err
 	}
 	return s.reapplySpeedSlotSelections(ctx, secret)
+}
+
+func (s *Service) ensureProbeInventoryApplied(ctx context.Context, secret, logLevel string, inventory []models.RuntimeNode) (bool, error) {
+	cacheKey, err := probeInventoryCacheKey(secret, s.mihomo.ProbeControllerAddr(), s.mihomo.ProbeMixedPort(), logLevel, inventory)
+	if err != nil {
+		return false, err
+	}
+	if cacheKey == s.probeCacheKey {
+		return false, nil
+	}
+	if err := s.applyProbeInventory(ctx, secret, logLevel, inventory); err != nil {
+		return false, err
+	}
+	s.probeCacheKey = cacheKey
+	return true, nil
+}
+
+func (s *Service) applySpeedSlotSelection(ctx context.Context, secret string, slotIndex int) error {
+	proxyName := s.speedSlotSelections[slotIndex]
+	if proxyName == "" {
+		return nil
+	}
+	return s.mihomo.SetProxySelection(ctx, secret, pools.ProbeSpeedSlotGroupName(slotIndex), proxyName)
 }
 
 func (s *Service) reapplySpeedSlotSelections(ctx context.Context, secret string) error {
@@ -477,6 +510,55 @@ func (s *Service) clearSpeedSlotSelection(slotIndex int) {
 	s.probeConfigMu.Lock()
 	defer s.probeConfigMu.Unlock()
 	delete(s.speedSlotSelections, slotIndex)
+}
+
+func probeInventoryCacheKey(secret, controller string, mixedPort int, logLevel string, inventory []models.RuntimeNode) (string, error) {
+	type inventoryNode struct {
+		SourceType     string `json:"source_type"`
+		SourceNodeID   int64  `json:"source_node_id"`
+		DisplayName    string `json:"display_name"`
+		Protocol       string `json:"protocol"`
+		Server         string `json:"server"`
+		Port           int    `json:"port"`
+		NormalizedJSON string `json:"normalized_json"`
+		Enabled        bool   `json:"enabled"`
+	}
+	nodes := make([]inventoryNode, 0, len(inventory))
+	for _, item := range inventory {
+		nodes = append(nodes, inventoryNode{
+			SourceType:     item.SourceType,
+			SourceNodeID:   item.SourceNodeID,
+			DisplayName:    item.DisplayName,
+			Protocol:       item.Protocol,
+			Server:         item.Server,
+			Port:           item.Port,
+			NormalizedJSON: item.NormalizedJSON,
+			Enabled:        item.Enabled,
+		})
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].SourceType != nodes[j].SourceType {
+			return nodes[i].SourceType < nodes[j].SourceType
+		}
+		return nodes[i].SourceNodeID < nodes[j].SourceNodeID
+	})
+	data, err := json.Marshal(struct {
+		Secret     string          `json:"secret"`
+		Controller string          `json:"controller"`
+		MixedPort  int             `json:"mixed_port"`
+		LogLevel   string          `json:"log_level"`
+		Nodes      []inventoryNode `json:"nodes"`
+	}{
+		Secret:     secret,
+		Controller: controller,
+		MixedPort:  mixedPort,
+		LogLevel:   logLevel,
+		Nodes:      nodes,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func boolToInt(v bool) int {

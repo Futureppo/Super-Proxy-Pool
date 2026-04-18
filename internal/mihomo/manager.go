@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"super-proxy-pool/internal/config"
 )
 
 type Options struct {
@@ -602,7 +604,7 @@ proxy-groups: []
 listeners: []
 rules:
   - MATCH,DIRECT
-`, normalizeLogLevel(logLevel), controller, secret))
+`, config.NormalizeLogLevel(logLevel), controller, secret))
 }
 
 func minimalProbeConfig(secret, controller string, mixedPort int, logLevel string) []byte {
@@ -620,14 +622,5 @@ proxy-groups:
       - DIRECT
 rules:
   - MATCH,GLOBAL
-`, normalizeLogLevel(logLevel), mixedPort, controller, secret))
-}
-
-func normalizeLogLevel(level string) string {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "trace", "debug", "info", "warning", "warn", "error", "silent":
-		return strings.ToLower(strings.TrimSpace(level))
-	default:
-		return "info"
-	}
+`, config.NormalizeLogLevel(logLevel), mixedPort, controller, secret))
 }

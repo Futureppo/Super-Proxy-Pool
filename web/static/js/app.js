@@ -24,6 +24,7 @@ const state = {
   pools: [],
   poolCandidates: [],
   currentPoolMembers: new Set(),
+  currentPoolMemberWeights: new Map(),
   eventSource: null,
   reloadTimer: null,
   loaders: {
@@ -844,7 +845,7 @@ async function onSubscriptionAction(event) {
       const outcome = await api(`/api/subscriptions/${id}/sync`, { method: "POST" });
       presentSubscriptionSyncResult(outcome);
     } else if (action === "toggle") {
-      await api(`/api/subscriptions/${id}`, { method: "PUT", body: JSON.stringify({ ...item, enabled: !item.enabled }) });
+      await api(`/api/subscriptions/${id}/toggle`, { method: "POST" });
       toast(item.enabled ? "订阅已禁用" : "订阅已启用", "success");
     } else if (action === "delete") {
       if (!confirm("确认删除该订阅？")) {
@@ -1158,8 +1159,8 @@ function renderPools() {
       </div>
       ${item.last_error ? `<div class="entity-notice error-copy">最近错误：${escapeHTML(item.last_error)}</div>` : ""}
       <div class="entity-meta muted pool-connection">
-        <span>SOCKS5：<code>socks5://${escapeHTML(item.auth_username || "")}:******@服务器IP:${escapeHTML(String(state.settings?.panel_port || 7891))}</code></span>
-        <span>HTTP：<code>http://${escapeHTML(item.auth_username || "")}:******@服务器IP:${escapeHTML(String(state.settings?.panel_port || 7891))}</code></span>
+        <span>SOCKS5：<code>socks5://${escapeHTML(item.auth_username || "")}:******@${escapeHTML(poolConnectionHost())}:${escapeHTML(String(state.settings?.panel_port || 7891))}</code></span>
+        <span>HTTP：<code>http://${escapeHTML(item.auth_username || "")}:******@${escapeHTML(poolConnectionHost())}:${escapeHTML(String(state.settings?.panel_port || 7891))}</code></span>
         <span>密码：<code data-role="pool-password" data-secret="${escapeHTML(item.auth_password_secret || "")}">******</code></span>
       </div>
       <div class="entity-actions">
@@ -1202,6 +1203,10 @@ async function onPoolAction(event) {
       $("#poolForm").elements.namedItem("enabled").checked = Boolean(item.enabled);
       const memberState = await api(`/api/pools/${id}/members`);
       state.currentPoolMembers = new Set((memberState.members || []).map((entry) => `${entry.source_type}:${entry.source_node_id}`));
+      state.currentPoolMemberWeights = new Map((memberState.members || []).map((entry) => [
+        `${entry.source_type}:${entry.source_node_id}`,
+        normalizeMemberWeight(entry.weight),
+      ]));
       renderPoolCandidates();
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
@@ -1252,26 +1257,49 @@ function renderPoolCandidates() {
   container.innerHTML = filtered.map((item) => {
     const key = `${item.source_type}:${item.source_node_id}`;
     const checked = state.currentPoolMembers.has(key) ? "checked" : "";
+    const disabled = state.currentPoolMembers.has(key) ? "" : "disabled";
+    const weight = state.currentPoolMemberWeights.get(key) || 1;
     return `
-      <label class="member-item" data-key="${key}">
-        <input type="checkbox" value="${key}" ${checked}>
-        <div>
-          <strong>${escapeHTML(item.display_name)}</strong>
-          <div class="muted">${escapeHTML(item.source_label)} · ${escapeHTML(item.protocol)} · ${escapeHTML(item.server)}:${escapeHTML(item.port)}</div>
-          <div class="muted">状态：${statusText(item)} · 延迟：${latencyLabel(item)}</div>
+      <div class="member-item" data-key="${key}">
+        <label class="member-main">
+          <input type="checkbox" value="${key}" ${checked}>
+          <div>
+            <strong>${escapeHTML(item.display_name)}</strong>
+            <div class="muted">${escapeHTML(item.source_label)} · ${escapeHTML(item.protocol)} · ${escapeHTML(item.server)}:${escapeHTML(item.port)}</div>
+            <div class="muted">状态：${statusText(item)} · 延迟：${latencyLabel(item)}</div>
+          </div>
+        </label>
+        <div class="member-weight">
+          <span class="muted">权重</span>
+          <input type="number" min="1" max="32" value="${escapeHTML(weight)}" data-role="member-weight" data-key="${key}" ${disabled}>
         </div>
-      </label>
+      </div>
     `;
   }).join("");
 
   $$("input[type=checkbox]", container).forEach((checkbox) => {
     checkbox.addEventListener("change", (event) => {
       const key = event.currentTarget.value;
+      const weightInput = event.currentTarget.closest(".member-item")?.querySelector("input[data-role=member-weight]");
       if (event.currentTarget.checked) {
         state.currentPoolMembers.add(key);
+        if (!state.currentPoolMemberWeights.has(key)) {
+          state.currentPoolMemberWeights.set(key, 1);
+        }
+        if (weightInput) weightInput.disabled = false;
       } else {
         state.currentPoolMembers.delete(key);
+        state.currentPoolMemberWeights.delete(key);
+        if (weightInput) weightInput.disabled = true;
       }
+    });
+  });
+
+  $$("input[data-role=member-weight]", container).forEach((input) => {
+    input.addEventListener("input", (event) => {
+      const key = event.currentTarget.dataset.key || "";
+      state.currentPoolMemberWeights.set(key, normalizeMemberWeight(event.currentTarget.value));
+      event.currentTarget.value = state.currentPoolMemberWeights.get(key);
     });
   });
 }
@@ -1281,6 +1309,14 @@ function selectFilteredMembers() {
   checkboxes.forEach((checkbox) => {
     checkbox.checked = true;
     state.currentPoolMembers.add(checkbox.value);
+    if (!state.currentPoolMemberWeights.has(checkbox.value)) {
+      state.currentPoolMemberWeights.set(checkbox.value, 1);
+    }
+    const weightInput = checkbox.closest(".member-item")?.querySelector("input[data-role=member-weight]");
+    if (weightInput) {
+      weightInput.disabled = false;
+      weightInput.value = state.currentPoolMemberWeights.get(checkbox.value);
+    }
   });
 }
 
@@ -1291,9 +1327,15 @@ function getSelectedMembers() {
       source_type,
       source_node_id: Number(source_node_id),
       enabled: true,
-      weight: 1,
+      weight: state.currentPoolMemberWeights.get(value) || 1,
     };
   });
+}
+
+function normalizeMemberWeight(value) {
+  const numeric = Number.parseInt(value, 10);
+  if (!Number.isFinite(numeric) || numeric < 1) return 1;
+  return Math.min(numeric, 32);
 }
 
 async function saveSettings(event) {
@@ -1405,6 +1447,7 @@ function resetPoolForm() {
   form.elements.namedItem("failover_enabled").checked = true;
   form.elements.namedItem("enabled").checked = true;
   state.currentPoolMembers = new Set();
+  state.currentPoolMemberWeights = new Map();
   renderPoolCandidates();
 }
 
@@ -1540,23 +1583,23 @@ function badgeHTML(text, type = "") {
   return `<span class="${className}">${text}</span>`;
 }
 
-function poolConnectionString(item) {
+function poolConnectionHost() {
+  return window.location.hostname || "服务器IP";
+}
+
+function poolConnectionString(item, protocol = "socks5") {
   const port = state.settings?.panel_port || 7891;
   const username = encodeURIComponent(item.auth_username || "");
   const password = encodeURIComponent(item.auth_password_secret || "");
-  return `socks5://${username}:${password}@服务器IP:${port}`;
+  return `${protocol}://${username}:${password}@${poolConnectionHost()}:${port}`;
 }
 
 function poolConnectionClipboardText(item) {
   const port = state.settings?.panel_port || 7891;
-  const username = encodeURIComponent(item.auth_username || "");
-  const password = encodeURIComponent(item.auth_password_secret || "");
-  const socks5Url = `socks5://${username}:${password}@server-ip:${port}`;
-  const httpUrl = `http://${username}:${password}@server-ip:${port}`;
   return [
     `panel port: ${port}`,
-    `SOCKS5: ${socks5Url}`,
-    `HTTP: ${httpUrl}`,
+    `SOCKS5: ${poolConnectionString(item, "socks5")}`,
+    `HTTP: ${poolConnectionString(item, "http")}`,
   ].join("\n");
 }
 

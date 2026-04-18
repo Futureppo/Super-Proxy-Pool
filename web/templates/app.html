@@ -184,7 +184,7 @@
           <div class="member-selector">
             <div class="member-selector-head">
               <strong>节点选择器</strong>
-              <span class="muted">可搜索、过滤并多选</span>
+              <span class="muted">可搜索、过滤、多选并设置权重</span>
             </div>
             <div class="toolbar">
               <input id="poolMemberSearch" type="search" placeholder="搜索候选节点">
@@ -236,7 +236,7 @@
           <section class="settings-section">
             <header class="settings-section-head">
               <h3>面板设置</h3>
-              <p>管理面板监听地址与端口。该分组保存后通常需要重启系统才会完全生效。</p>
+              <p>管理面板监听地址与端口。该分组保存后通常需要重新拉起服务进程才会完全生效。</p>
             </header>
             <label>
               <span>面板监听地址</span>
@@ -294,7 +294,7 @@
             </header>
             <label>
               <span>默认订阅同步间隔（秒）</span>
-              <input type="number" name="default_subscription_interval_sec" min="0" required>
+              <input type="number" name="default_subscription_interval_sec" min="1" required>
             </label>
             <label>
               <span>Mihomo Controller Secret</span>
@@ -307,10 +307,13 @@
             <label>
               <span>日志级别</span>
               <select name="log_level">
+                <option value="trace">trace</option>
                 <option value="debug">debug</option>
                 <option value="info">info</option>
                 <option value="warning">warning</option>
+                <option value="warn">warn</option>
                 <option value="error">error</option>
+                <option value="silent">silent</option>
               </select>
             </label>
           </section>
@@ -368,7 +371,7 @@
 
           <div class="danger-zone">
             <h3>危险操作</h3>
-            <p>重启系统会先保存当前配置，然后退出主进程。若容器配置了 Docker restart policy，会自动拉起；若没有配置，则需要手动重新启动服务。</p>
+            <p>该操作会请求当前服务进程退出。使用仓库内置的 Docker Compose 部署时，容器默认会按 <code>unless-stopped</code> 自动拉起；自定义部署请确认已配置重启策略或外部守护。</p>
             <button id="restartButton" class="danger" type="button" data-loading-text="重启中...">重启系统</button>
           </div>
         </article>
