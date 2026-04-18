@@ -5,3 +5,4 @@ tmp-e2e-data*/
 *.exe
 *.db
 *.log
+.codex

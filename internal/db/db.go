@@ -13,12 +13,21 @@ type Store struct {
 	DB *sql.DB
 }
 
+const (
+	sqliteBusyTimeoutMS = 5000
+	sqliteMaxOpenConns  = 4
+	sqliteMaxIdleConns  = 4
+)
+
 func Open(path string) (*Store, error) {
-	database, err := sql.Open("sqlite", path)
+	database, err := sql.Open("sqlite",
+		fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", path, sqliteBusyTimeoutMS),
+	)
 	if err != nil {
 		return nil, err
 	}
-	database.SetMaxOpenConns(1)
+	database.SetMaxOpenConns(sqliteMaxOpenConns)
+	database.SetMaxIdleConns(sqliteMaxIdleConns)
 	database.SetConnMaxLifetime(30 * time.Minute)
 
 	store := &Store{DB: database}

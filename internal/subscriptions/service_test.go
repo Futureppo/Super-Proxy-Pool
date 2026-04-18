@@ -271,3 +271,103 @@ func TestAddAfterSyncHookRunsAllHooks(t *testing.T) {
 		}
 	}
 }
+
+func TestListWithStatsAggregatesSubscriptionNodes(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	cfg := config.App{
+		PanelHost:               "127.0.0.1",
+		PanelPort:               7890,
+		DataDir:                 tempDir,
+		DBPath:                  filepath.Join(tempDir, "app.db"),
+		RuntimeDir:              filepath.Join(tempDir, "runtime"),
+		ProdConfigPath:          filepath.Join(tempDir, "runtime", "mihomo-prod.yaml"),
+		ProbeConfigPath:         filepath.Join(tempDir, "runtime", "mihomo-probe.yaml"),
+		ProdControllerAddr:      "127.0.0.1:19090",
+		ProbeControllerAddr:     "127.0.0.1:19091",
+		ProbeMixedPort:          17891,
+		DefaultControllerSecret: "secret-token",
+	}
+	if err := config.EnsureDirs(cfg); err != nil {
+		t.Fatalf("EnsureDirs() error = %v", err)
+	}
+	store, err := db.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("db.Open() error = %v", err)
+	}
+	defer store.Close()
+
+	settingsSvc := settings.NewService(store, cfg)
+	hash, err := auth.HashPassword("admin")
+	if err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
+	}
+	if err := settingsSvc.EnsureDefaults(ctx, hash); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+
+	svc := NewService(store, settingsSvc, events.NewBroker())
+	sub, err := svc.Create(ctx, UpsertRequest{
+		Name:            "stats-demo",
+		URL:             "https://example.com/subscription.yaml",
+		Enabled:         true,
+		SyncIntervalSec: 3600,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	now := time.Now().UTC()
+	type nodeSeed struct {
+		name      string
+		enabled   int
+		status    string
+		latencyMS *int64
+	}
+	latencyFast := int64(120)
+	latencySlow := int64(240)
+	seeds := []nodeSeed{
+		{name: "fast", enabled: 1, status: "available", latencyMS: &latencyFast},
+		{name: "disabled-but-available", enabled: 0, status: "available", latencyMS: &latencySlow},
+		{name: "offline", enabled: 1, status: "unavailable", latencyMS: nil},
+	}
+	for _, seed := range seeds {
+		if _, err := store.DB.ExecContext(ctx, `INSERT INTO subscription_nodes (
+				subscription_id, display_name, protocol, server, port, raw_payload, normalized_json, enabled,
+				last_latency_ms, last_status, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sub.ID, seed.name, "ss", "example.com", 443, "payload", `{}`, seed.enabled,
+			seed.latencyMS, seed.status, now, now,
+		); err != nil {
+			t.Fatalf("insert subscription_nodes seed %q error = %v", seed.name, err)
+		}
+	}
+
+	items, err := svc.ListWithStats(ctx)
+	if err != nil {
+		t.Fatalf("ListWithStats() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("ListWithStats() len = %d, want 1", len(items))
+	}
+
+	item := items[0]
+	if item.ID != sub.ID {
+		t.Fatalf("item.ID = %d, want %d", item.ID, sub.ID)
+	}
+	if item.TotalNodes != 3 {
+		t.Fatalf("TotalNodes = %d, want 3", item.TotalNodes)
+	}
+	if item.AvailableNodes != 2 {
+		t.Fatalf("AvailableNodes = %d, want 2", item.AvailableNodes)
+	}
+	if item.InvalidNodes != 2 {
+		t.Fatalf("InvalidNodes = %d, want 2", item.InvalidNodes)
+	}
+	if item.AverageLatencyMS == nil {
+		t.Fatalf("AverageLatencyMS should be set")
+	}
+	if *item.AverageLatencyMS != 180 {
+		t.Fatalf("AverageLatencyMS = %d, want 180", *item.AverageLatencyMS)
+	}
+}

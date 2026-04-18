@@ -39,6 +39,14 @@ type Subscription struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+type SubscriptionListItem struct {
+	Subscription
+	TotalNodes       int    `json:"total_nodes"`
+	AvailableNodes   int    `json:"available_nodes"`
+	InvalidNodes     int    `json:"invalid_nodes"`
+	AverageLatencyMS *int64 `json:"average_latency_ms"`
+}
+
 type SubscriptionNode struct {
 	ID             int64      `json:"id"`
 	SubscriptionID int64      `json:"subscription_id"`

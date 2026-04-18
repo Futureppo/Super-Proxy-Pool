@@ -120,6 +120,34 @@ func (s *Service) List(ctx context.Context) ([]models.Subscription, error) {
 	return items, rows.Err()
 }
 
+func (s *Service) ListWithStats(ctx context.Context) ([]models.SubscriptionListItem, error) {
+	rows, err := s.store.DB.QueryContext(ctx, `SELECT s.id, s.name, s.url, s.headers_json, s.enabled, s.sync_interval_sec,
+		s.last_sync_at, s.last_sync_status, s.last_error, s.etag, s.last_modified, s.created_at, s.updated_at,
+		COUNT(n.id) AS total_nodes,
+		SUM(CASE WHEN n.last_status = 'available' THEN 1 ELSE 0 END) AS available_nodes,
+		SUM(CASE WHEN n.id IS NOT NULL AND (n.enabled = 0 OR n.last_status = 'unavailable') THEN 1 ELSE 0 END) AS invalid_nodes,
+		AVG(n.last_latency_ms) AS average_latency_ms
+		FROM subscriptions s
+		LEFT JOIN subscription_nodes n ON n.subscription_id = s.id
+		GROUP BY s.id, s.name, s.url, s.headers_json, s.enabled, s.sync_interval_sec, s.last_sync_at,
+			s.last_sync_status, s.last_error, s.etag, s.last_modified, s.created_at, s.updated_at
+		ORDER BY s.updated_at DESC, s.id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []models.SubscriptionListItem
+	for rows.Next() {
+		item, err := scanSubscriptionListItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Service) Get(ctx context.Context, id int64) (models.Subscription, error) {
 	row := s.store.DB.QueryRowContext(ctx, `SELECT id, name, url, headers_json, enabled, sync_interval_sec, last_sync_at,
 		last_sync_status, last_error, etag, last_modified, created_at, updated_at
@@ -438,6 +466,39 @@ func scanSubscription(scanner interface{ Scan(dest ...any) error }) (models.Subs
 	if lastSyncAt.Valid {
 		v := lastSyncAt.Time
 		item.LastSyncAt = &v
+	}
+	return item, nil
+}
+
+func scanSubscriptionListItem(scanner interface{ Scan(dest ...any) error }) (models.SubscriptionListItem, error) {
+	var item models.SubscriptionListItem
+	var enabled int
+	var lastSyncAt sql.NullTime
+	var totalNodes int64
+	var availableNodes int64
+	var invalidNodes int64
+	var averageLatency sql.NullFloat64
+
+	err := scanner.Scan(
+		&item.ID, &item.Name, &item.URL, &item.HeadersJSON, &enabled, &item.SyncIntervalSec, &lastSyncAt,
+		&item.LastSyncStatus, &item.LastError, &item.ETag, &item.LastModified, &item.CreatedAt, &item.UpdatedAt,
+		&totalNodes, &availableNodes, &invalidNodes, &averageLatency,
+	)
+	if err != nil {
+		return models.SubscriptionListItem{}, err
+	}
+
+	item.Enabled = enabled == 1
+	item.TotalNodes = int(totalNodes)
+	item.AvailableNodes = int(availableNodes)
+	item.InvalidNodes = int(invalidNodes)
+	if lastSyncAt.Valid {
+		v := lastSyncAt.Time
+		item.LastSyncAt = &v
+	}
+	if averageLatency.Valid {
+		avg := int64(averageLatency.Float64)
+		item.AverageLatencyMS = &avg
 	}
 	return item, nil
 }

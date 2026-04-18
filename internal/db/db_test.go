@@ -125,6 +125,53 @@ func TestOpenMigratesLegacyProxyPoolsWithForeignKeys(t *testing.T) {
 	}
 }
 
+func TestOpenAppliesConnectionPragmasToEveryConnection(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	conn1, err := store.DB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("DB.Conn() conn1 error = %v", err)
+	}
+	defer conn1.Close()
+
+	conn2, err := store.DB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("DB.Conn() conn2 error = %v", err)
+	}
+	defer conn2.Close()
+
+	for _, conn := range []*sql.Conn{conn1, conn2} {
+		var busyTimeout int
+		if err := conn.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+			t.Fatalf("PRAGMA busy_timeout error = %v", err)
+		}
+		if busyTimeout != sqliteBusyTimeoutMS {
+			t.Fatalf("busy_timeout = %d, want %d", busyTimeout, sqliteBusyTimeoutMS)
+		}
+
+		var foreignKeys int
+		if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+			t.Fatalf("PRAGMA foreign_keys error = %v", err)
+		}
+		if foreignKeys != 1 {
+			t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
+		}
+
+		var journalMode string
+		if err := conn.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+			t.Fatalf("PRAGMA journal_mode error = %v", err)
+		}
+		if journalMode != "wal" {
+			t.Fatalf("journal_mode = %q, want %q", journalMode, "wal")
+		}
+	}
+}
+
 func tableColumns(database *sql.DB, table string) (map[string]bool, error) {
 	rows, err := database.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {

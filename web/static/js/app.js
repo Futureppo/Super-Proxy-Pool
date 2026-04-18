@@ -1,18 +1,36 @@
 const page = document.body.dataset.page || "";
 const subscriptionId = document.body.dataset.subscriptionId || "";
 
+function createLoaderState() {
+  return {
+    requestId: 0,
+    controller: null,
+    inFlight: false,
+    pending: false,
+    pendingForeground: false,
+    initialized: false,
+    promise: Promise.resolve(),
+  };
+}
+
 const state = {
   settings: null,
   mihomoStatus: null,
   mihomoRelease: null,
   subscriptions: [],
   manualNodes: [],
+  subscriptionDetail: null,
   subscriptionNodes: [],
   pools: [],
   poolCandidates: [],
   currentPoolMembers: new Set(),
   eventSource: null,
   reloadTimer: null,
+  loaders: {
+    subscriptions: createLoaderState(),
+    subscriptionDetail: createLoaderState(),
+  },
+  pendingNodeActions: new Set(),
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -77,18 +95,81 @@ function connectEvents() {
   };
 }
 
-function scheduleReload() {
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
+
+function reportAsyncError(error) {
+  if (isAbortError(error)) return;
+  console.error(error);
+}
+
+function requestManagedLoad(loader, run, { foreground = false, replace = false } = {}) {
+  if (loader.inFlight) {
+    if (!replace) {
+      loader.pending = true;
+      loader.pendingForeground = loader.pendingForeground || foreground;
+      return loader.promise;
+    }
+    if (loader.controller) {
+      loader.controller.abort();
+    }
+  }
+
+  loader.pending = false;
+  loader.pendingForeground = false;
+
+  const controller = new AbortController();
+  const requestId = loader.requestId + 1;
+  loader.requestId = requestId;
+  loader.controller = controller;
+  loader.inFlight = true;
+
+  const promise = (async () => {
+    try {
+      return await run({ signal: controller.signal, requestId, foreground });
+    } catch (error) {
+      if (isAbortError(error)) return undefined;
+      throw error;
+    } finally {
+      if (loader.requestId !== requestId) {
+        return;
+      }
+      loader.inFlight = false;
+      if (loader.controller === controller) {
+        loader.controller = null;
+      }
+      if (loader.pending) {
+        const nextForeground = loader.pendingForeground;
+        loader.pending = false;
+        loader.pendingForeground = false;
+        queueMicrotask(() => {
+          void requestManagedLoad(loader, run, { foreground: nextForeground }).catch(reportAsyncError);
+        });
+      }
+    }
+  })();
+
+  loader.promise = promise;
+  return promise;
+}
+
+function isCurrentLoad(loader, requestId) {
+  return loader.requestId === requestId;
+}
+
+function scheduleReload({ delay = 250, silent = true } = {}) {
   clearTimeout(state.reloadTimer);
   state.reloadTimer = setTimeout(() => {
-    if (page === "subscriptions") loadSubscriptions();
-    if (page === "subscription-detail") loadSubscriptionDetail();
-    if (page === "manual-nodes") loadManualNodes();
+    if (page === "subscriptions") void loadSubscriptions({ foreground: !silent }).catch(reportAsyncError);
+    if (page === "subscription-detail") void loadSubscriptionDetail({ foreground: !silent }).catch(reportAsyncError);
+    if (page === "manual-nodes") void loadManualNodes().catch(reportAsyncError);
     if (page === "pools") {
-      loadPools();
-      loadPoolCandidates();
+      void loadPools().catch(reportAsyncError);
+      void loadPoolCandidates().catch(reportAsyncError);
     }
-    if (page === "settings") loadSettings();
-  }, 250);
+    if (page === "settings") void loadSettings().catch(reportAsyncError);
+  }, delay);
 }
 
 function handleServerEvent(raw) {
@@ -195,16 +276,24 @@ function handleSubscriptionSynced(payload) {
 }
 
 function handleProbeEvent(type, payload) {
+  if (type === "probe.queued" && payload?.source_type === "subscription") {
+    return;
+  }
   if (page === "manual-nodes" && payload?.source_type === "manual") {
     scheduleReload();
     return;
   }
   if (page === "subscription-detail" && payload?.source_type === "subscription") {
-    scheduleReload();
+    if (type === "probe.finished" && applyProbeResultToCurrentSubscription(payload)) {
+      return;
+    }
+    scheduleReload({ delay: 500 });
     return;
   }
   if (page === "subscriptions" && payload?.source_type === "subscription") {
-    scheduleReload();
+    if (type === "probe.finished") {
+      scheduleReload({ delay: 800 });
+    }
     return;
   }
   if (page === "pools") {
@@ -247,7 +336,7 @@ async function initSubscriptionsPage() {
   $("#subscriptionFormReset").addEventListener("click", () => resetForm(form));
   $("#subscriptionSearch").addEventListener("input", renderSubscriptions);
   form.addEventListener("submit", saveSubscription);
-  await loadSubscriptions();
+  await loadSubscriptions({ foreground: true });
 }
 
 async function initSubscriptionDetailPage() {
@@ -259,7 +348,7 @@ async function initSubscriptionDetailPage() {
     setButtonLoading(button, true);
     try {
       const outcome = await api(`/api/subscriptions/${subscriptionId}/sync`, { method: "POST" });
-      await loadSubscriptionDetail();
+      await loadSubscriptionDetail({ replace: true });
       presentSubscriptionSyncResult(outcome);
       setButtonLoading(button, false);
     } catch (error) {
@@ -267,7 +356,7 @@ async function initSubscriptionDetailPage() {
       setButtonLoading(button, false);
     }
   });
-  await loadSubscriptionDetail();
+  await loadSubscriptionDetail({ foreground: true });
 }
 
 async function initManualNodesPage() {
@@ -313,19 +402,45 @@ async function preloadSettings() {
   }
 }
 
-async function loadSubscriptions() {
-  setContainerLoading("#subscriptionList", "加载订阅中...");
-  state.subscriptions = await api("/api/subscriptions");
-  renderSubscriptions();
+async function loadSubscriptions(options = {}) {
+  const loader = state.loaders.subscriptions;
+  const foreground = options.foreground ?? !loader.initialized;
+  const replace = options.replace ?? false;
+  return requestManagedLoad(loader, async ({ signal, requestId, foreground: showLoading }) => {
+    if (showLoading) {
+      setContainerLoading("#subscriptionList", "加载订阅中...");
+    }
+    const subscriptions = await api("/api/subscriptions", { signal });
+    if (!isCurrentLoad(loader, requestId)) return;
+    state.subscriptions = subscriptions;
+    loader.initialized = true;
+    renderSubscriptions();
+  }, { foreground, replace });
 }
 
-async function loadSubscriptionDetail() {
-  setContainerLoading("#subscriptionNodeList", "加载节点中...");
-  const [detail, nodes] = await Promise.all([
-    api(`/api/subscriptions/${subscriptionId}`),
-    api(`/api/subscriptions/${subscriptionId}/nodes`),
-  ]);
-  state.subscriptionNodes = nodes;
+async function loadSubscriptionDetail(options = {}) {
+  const loader = state.loaders.subscriptionDetail;
+  const foreground = options.foreground ?? !loader.initialized;
+  const replace = options.replace ?? false;
+  return requestManagedLoad(loader, async ({ signal, requestId, foreground: showLoading }) => {
+    if (showLoading) {
+      setContainerLoading("#subscriptionNodeList", "加载节点中...");
+    }
+    const [detail, nodes] = await Promise.all([
+      api(`/api/subscriptions/${subscriptionId}`, { signal }),
+      api(`/api/subscriptions/${subscriptionId}/nodes`, { signal }),
+    ]);
+    if (!isCurrentLoad(loader, requestId)) return;
+    state.subscriptionDetail = detail;
+    state.subscriptionNodes = nodes;
+    loader.initialized = true;
+    renderSubscriptionDetail();
+  }, { foreground, replace });
+}
+
+function renderSubscriptionDetail() {
+  const detail = state.subscriptionDetail;
+  if (!detail) return;
   const meta = $("#subscriptionDetailMeta");
   meta.innerHTML = [
     badgeHTML(escapeHTML(detail.name)),
@@ -344,6 +459,66 @@ async function loadSubscriptionDetail() {
     clearFeedback("#subscriptionSyncFeedback");
   }
   renderSubscriptionNodes();
+}
+
+function updateSubscriptionNodeInState(nodeID, updater) {
+  let updated = false;
+  state.subscriptionNodes = state.subscriptionNodes.map((item) => {
+    if (String(item.id) !== String(nodeID)) {
+      return item;
+    }
+    updated = true;
+    return updater({ ...item });
+  });
+  return updated;
+}
+
+function replaceSubscriptionNode(node) {
+  if (!node) return false;
+  return updateSubscriptionNodeInState(node.id, () => ({ ...node }));
+}
+
+function markSubscriptionNodeTesting(nodeID) {
+  return updateSubscriptionNodeInState(nodeID, (item) => ({
+    ...item,
+    last_status: "testing",
+    last_error: "",
+  }));
+}
+
+function isCurrentSubscriptionProbe(payload) {
+  return String(payload?.source_type || "") === "subscription";
+}
+
+function applyProbeResultToCurrentSubscription(payload) {
+  if (!isCurrentSubscriptionProbe(payload)) return false;
+
+  const now = new Date().toISOString();
+  const updated = updateSubscriptionNodeInState(payload.source_node_id, (item) => {
+    const next = {
+      ...item,
+      last_status: payload.success ? "available" : "unavailable",
+      last_error: payload.success ? "" : (payload.error || ""),
+    };
+    if (payload.test_type === "latency") {
+      next.last_test_at = now;
+      if (payload.success && payload.latency_ms !== undefined) {
+        next.last_latency_ms = Number(payload.latency_ms);
+      }
+    }
+    if (payload.test_type === "speed") {
+      next.last_speed_at = now;
+      if (payload.success && payload.speed_mbps !== undefined) {
+        next.last_speed_mbps = Number(payload.speed_mbps);
+      }
+    }
+    return next;
+  });
+
+  if (updated) {
+    renderSubscriptionNodes();
+  }
+  return updated;
 }
 
 async function loadManualNodes() {
@@ -590,7 +765,7 @@ async function saveSubscription(event) {
       toast("订阅已创建", "success");
     }
     resetForm(form);
-    await loadSubscriptions();
+    await loadSubscriptions({ replace: true });
     setButtonLoading(button, false);
   } catch (error) {
     toast(error.message, "error");
@@ -679,7 +854,7 @@ async function onSubscriptionAction(event) {
       await api(`/api/subscriptions/${id}`, { method: "DELETE" });
       toast("订阅已删除", "success");
     }
-    await loadSubscriptions();
+    await loadSubscriptions({ replace: true });
   } catch (error) {
     toast(error.message, "error");
     setButtonLoading(button, false);
@@ -754,6 +929,7 @@ function renderManualNodes() {
 }
 
 function renderNodeCard(item, sourceType) {
+  const actionDisabled = isNodeActionPending(sourceType, item.id) ? "disabled" : "";
   return `
     <article class="entity-card node-card">
       <div class="entity-head">
@@ -772,16 +948,33 @@ function renderNodeCard(item, sourceType) {
         <span>最近测试：${formatTime(item.last_test_at || item.last_speed_at)}</span>
       </div>
       <div class="entity-actions">
-        <button type="button" data-source="${sourceType}" data-id="${item.id}" data-action="latency" data-loading-text="测试中...">延迟测试</button>
-        <button type="button" data-source="${sourceType}" data-id="${item.id}" data-action="speed" data-loading-text="测速中...">测速</button>
-        <button type="button" class="secondary" data-source="${sourceType}" data-id="${item.id}" data-action="toggle" data-loading-text="切换中...">${item.enabled ? "禁用" : "启用"}</button>
+        <button type="button" data-source="${sourceType}" data-id="${item.id}" data-action="latency" data-loading-text="测试中..." ${actionDisabled}>延迟测试</button>
+        <button type="button" data-source="${sourceType}" data-id="${item.id}" data-action="speed" data-loading-text="测速中..." ${actionDisabled}>测速</button>
+        <button type="button" class="secondary" data-source="${sourceType}" data-id="${item.id}" data-action="toggle" data-loading-text="切换中..." ${actionDisabled}>${item.enabled ? "禁用" : "启用"}</button>
         ${sourceType === "manual" ? `
-          <button type="button" class="secondary" data-source="${sourceType}" data-id="${item.id}" data-action="edit">编辑</button>
-          <button type="button" class="danger" data-source="${sourceType}" data-id="${item.id}" data-action="delete" data-loading-text="删除中...">删除</button>
+          <button type="button" class="secondary" data-source="${sourceType}" data-id="${item.id}" data-action="edit" ${actionDisabled}>编辑</button>
+          <button type="button" class="danger" data-source="${sourceType}" data-id="${item.id}" data-action="delete" data-loading-text="删除中..." ${actionDisabled}>删除</button>
         ` : ""}
       </div>
     </article>
   `;
+}
+
+function nodeActionKey(sourceType, id) {
+  return `${sourceType}:${id}`;
+}
+
+function isNodeActionPending(sourceType, id) {
+  return state.pendingNodeActions.has(nodeActionKey(sourceType, id));
+}
+
+function setNodeActionPending(sourceType, id, pending) {
+  const key = nodeActionKey(sourceType, id);
+  if (pending) {
+    state.pendingNodeActions.add(key);
+    return;
+  }
+  state.pendingNodeActions.delete(key);
 }
 
 function bindNodeCardActions(container, sourceType) {
@@ -790,6 +983,7 @@ function bindNodeCardActions(container, sourceType) {
       const current = event.currentTarget;
       const action = current.dataset.action;
       const id = current.dataset.id;
+      if (isNodeActionPending(sourceType, id)) return;
 
       try {
         if (action === "edit" && sourceType === "manual") {
@@ -800,18 +994,29 @@ function bindNodeCardActions(container, sourceType) {
           return;
         }
 
+        setNodeActionPending(sourceType, id, true);
         setButtonLoading(current, true);
-        await triggerNodeAction(sourceType, id, action);
+        const result = await triggerNodeAction(sourceType, id, action);
         if (sourceType === "manual") {
           await loadManualNodes();
         } else {
-          await loadSubscriptionDetail();
+          if (result?.node) {
+            replaceSubscriptionNode(result.node);
+          } else if (result?.queued) {
+            markSubscriptionNodeTesting(id);
+          }
+          renderSubscriptionNodes();
         }
       } catch (error) {
         if (error.message !== "已取消删除") {
           toast(error.message, "error");
         }
         setButtonLoading(current, false);
+      } finally {
+        setNodeActionPending(sourceType, id, false);
+        if (sourceType === "subscription") {
+          renderSubscriptionNodes();
+        }
       }
     });
   });
@@ -874,17 +1079,17 @@ async function triggerNodeAction(sourceType, id, action) {
   if (action === "latency") {
     await api(`${base}/latency-test`, { method: "POST" });
     toast("已触发延迟测试", "success");
-    return;
+    return { queued: true };
   }
   if (action === "speed") {
     await api(`${base}/speed-test`, { method: "POST" });
     toast("已触发测速", "success");
-    return;
+    return { queued: true };
   }
   if (action === "toggle") {
-    await api(`${base}/toggle`, { method: "POST" });
+    const node = await api(`${base}/toggle`, { method: "POST" });
     toast("节点状态已更新", "success");
-    return;
+    return { node };
   }
   if (action === "delete" && sourceType === "manual") {
     if (!confirm("确认删除该节点？")) throw new Error("已取消删除");
